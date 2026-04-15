@@ -570,6 +570,58 @@
   gap: 0.82rem;
 }
 
+.workbench-writing-rule-field {
+  grid-column: 1 / -1;
+}
+
+.workbench-writing-rule-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.62rem;
+}
+
+.workbench-writing-rule-option {
+  border: 1px solid rgba(15, 118, 110, 0.22);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #0f172a;
+  padding: 0.68rem 0.74rem;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.34rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.workbench-writing-rule-option:hover {
+  border-color: rgba(15, 118, 110, 0.46);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 18px rgba(15, 118, 110, 0.12);
+}
+
+.workbench-writing-rule-option.is-active {
+  border-color: rgba(15, 118, 110, 0.68);
+  background: linear-gradient(135deg, rgba(15, 118, 110, 0.12), rgba(62, 168, 121, 0.15));
+  box-shadow: 0 12px 22px rgba(15, 118, 110, 0.16);
+}
+
+.workbench-writing-rule-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #0f766e;
+  font-size: 0.83rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.workbench-writing-rule-desc {
+  color: #475569;
+  font-size: 0.77rem;
+  line-height: 1.46;
+}
+
 .workbench-listening-answer-sheet {
   align-self: stretch;
   min-height: 100%;
@@ -1950,6 +2002,7 @@
   .workbench-listening-grid,
   .workbench-listening-panel,
   .workbench-listening-audio-grid,
+  .workbench-writing-rule-options,
   .workbench-writing-material-grid,
   .workbench-stage-grid,
   .workbench-loading-grid {

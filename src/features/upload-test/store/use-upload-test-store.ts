@@ -125,6 +125,10 @@ function ensureValidSkill(skill: DraftSkill): skill is TestSkill {
   return skill === 'reading' || skill === 'listening' || skill === 'writing';
 }
 
+function ensureValidWritingRule(rule: unknown): rule is WritingRule {
+  return rule === 'auto-submit' || rule === 'overtime';
+}
+
 function isSingleChoiceQuestionType(type: string): boolean {
   return /multiple choice.*single answer/i.test(type);
 }
@@ -822,6 +826,11 @@ export const useUploadTestStore = create<UploadTestStore>((set, get) => ({
 
     const finalParts = sanitizedParts.length > 0 ? calculateQuestionNumbers(sanitizedParts) : [];
     const answerKey = generateAnswerKey(finalParts);
+    const resolvedWritingRule = snapshot?.writingRule ?? state.draft.writingRule ?? null;
+
+    if (skill === 'writing' && !ensureValidWritingRule(resolvedWritingRule)) {
+      return null;
+    }
 
     const sanitizedFiles = Object.fromEntries(
       Object.entries(uploadedFiles || {})
@@ -848,7 +857,7 @@ export const useUploadTestStore = create<UploadTestStore>((set, get) => ({
       },
       files: sanitizedFiles,
       answerKey,
-      writingRule: snapshot?.writingRule ?? state.draft.writingRule ?? null,
+      writingRule: resolvedWritingRule,
       classAssignment,
     };
   },

@@ -22,6 +22,7 @@ import type {
   UploadFileBucket,
   TestSkill,
   UploadFileRef,
+  WritingRule,
 } from '../types';
 
 const LISTENING_AUDIO_BUCKETS: Array<keyof UploadFileBucket> = [
@@ -73,6 +74,10 @@ function isMatchingFeaturesType(typeLabel: string): boolean {
 
 function isTrueFalseOrYesNoType(typeLabel: string): boolean {
   return /(true\s*\/\s*false\s*\/\s*not\s*given|yes\s*\/\s*no\s*\/\s*not\s*given)/i.test(typeLabel);
+}
+
+function isValidWritingRule(value: unknown): value is WritingRule {
+  return value === 'auto-submit' || value === 'overtime';
 }
 
 function splitListeningAnswerSheet(value: string): string[] {
@@ -347,6 +352,7 @@ export function UploadTestWorkbench() {
 
   const setSkill = useUploadTestStore((state) => state.setSkill);
   const setTestName = useUploadTestStore((state) => state.setTestName);
+  const setWritingRule = useUploadTestStore((state) => state.setWritingRule);
   const setDistribution = useUploadTestStore((state) => state.setDistribution);
   const setSelectedClasses = useUploadTestStore((state) => state.setSelectedClasses);
   const setFilesForBucket = useUploadTestStore((state) => state.setFilesForBucket);
@@ -550,6 +556,7 @@ export function UploadTestWorkbench() {
       }
 
       if (nextSkill !== 'writing') {
+        setWritingRule(null);
         setWritingTask1File(null);
         setWritingTask2File(null);
         setFilesForBucket('writingTask1', []);
@@ -560,6 +567,7 @@ export function UploadTestWorkbench() {
     }
 
     setSkill(null);
+    setWritingRule(null);
     setFilesForBucket('reading', []);
     setWritingTask1File(null);
     setWritingTask2File(null);
@@ -653,6 +661,7 @@ export function UploadTestWorkbench() {
     }
 
     const testName = normalizedTestName;
+    const writingRule = draft.writingRule;
     if (!testName) {
       setSubmitStatus('error');
       setSubmitMessage('Please provide a test name before submitting.');
@@ -671,6 +680,12 @@ export function UploadTestWorkbench() {
       if (!hasTask1 || !hasTask2) {
         setSubmitStatus('error');
         setSubmitMessage('Please upload both writing task materials (Task 1 and Task 2).');
+        return;
+      }
+
+      if (!isValidWritingRule(writingRule)) {
+        setSubmitStatus('error');
+        setSubmitMessage('Please choose a writing submission rule before submitting this writing test.');
         return;
       }
     }
@@ -702,7 +717,7 @@ export function UploadTestWorkbench() {
       const finalPayload = buildCreateTestPayload(uploadedFiles, partsWithUploadedInlineImages, {
         skill,
         testName,
-        writingRule: draft.writingRule,
+        writingRule,
         classAssignment: draft.classAssignment,
       });
       if (!finalPayload) {
@@ -786,67 +801,109 @@ export function UploadTestWorkbench() {
           </label>
 
           {draft.skill === 'writing' ? (
-            <div className="workbench-writing-material-grid">
-              <label className="workbench-field">
-                <span className="field-label">Writing Task 1 Image</span>
-                <div
-                  ref={writingTask1DragDrop.zoneRef}
-                  className={`workbench-file-drop-zone ${writingTask1DragDrop.isDragging ? 'is-dragging' : ''}`}
-                  onDragEnter={writingTask1DragDrop.handleDragEnter}
-                  onDragLeave={writingTask1DragDrop.handleDragLeave}
-                  onDragOver={writingTask1DragDrop.handleDragOver}
-                  onDrop={writingTask1DragDrop.handleDrop}
-                >
-                  <input
-                    ref={writingTask1DragDrop.inputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={(event) => { const file = event.target.files?.[0] || null; onSkillAssetChange('writingTask1', file); event.target.value = ''; }}
-                    className="workbench-input workbench-file-input"
-                  />
-                  <div className="workbench-file-drop-hint">
-                    <span className="workbench-file-drop-icon" aria-hidden="true">🖼️</span>
-                    <span className="workbench-file-drop-text">
-                      {writingTask1File ? (
-                        <>🖼️ {writingTask1File.name}</>
-                      ) : (
-                        <>Drag Task 1 image or <button type="button" onClick={() => writingTask1DragDrop.trigger()} className="workbench-file-drop-link">browse</button> or paste</>
-                      )}
-                    </span>
+            <>
+              <div className="workbench-writing-material-grid">
+                <label className="workbench-field">
+                  <span className="field-label">Writing Task 1 Image</span>
+                  <div
+                    ref={writingTask1DragDrop.zoneRef}
+                    className={`workbench-file-drop-zone ${writingTask1DragDrop.isDragging ? 'is-dragging' : ''}`}
+                    onDragEnter={writingTask1DragDrop.handleDragEnter}
+                    onDragLeave={writingTask1DragDrop.handleDragLeave}
+                    onDragOver={writingTask1DragDrop.handleDragOver}
+                    onDrop={writingTask1DragDrop.handleDrop}
+                  >
+                    <input
+                      ref={writingTask1DragDrop.inputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={(event) => { const file = event.target.files?.[0] || null; onSkillAssetChange('writingTask1', file); event.target.value = ''; }}
+                      className="workbench-input workbench-file-input"
+                    />
+                    <div className="workbench-file-drop-hint">
+                      <span className="workbench-file-drop-icon" aria-hidden="true">🖼️</span>
+                      <span className="workbench-file-drop-text">
+                        {writingTask1File ? (
+                          <>🖼️ {writingTask1File.name}</>
+                        ) : (
+                          <>Drag Task 1 image or <button type="button" onClick={() => writingTask1DragDrop.trigger()} className="workbench-file-drop-link">browse</button> or paste</>
+                        )}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              </label>
+                </label>
 
-              <label className="workbench-field">
-                <span className="field-label">Writing Task 2 Image</span>
-                <div
-                  ref={writingTask2DragDrop.zoneRef}
-                  className={`workbench-file-drop-zone ${writingTask2DragDrop.isDragging ? 'is-dragging' : ''}`}
-                  onDragEnter={writingTask2DragDrop.handleDragEnter}
-                  onDragLeave={writingTask2DragDrop.handleDragLeave}
-                  onDragOver={writingTask2DragDrop.handleDragOver}
-                  onDrop={writingTask2DragDrop.handleDrop}
-                >
-                  <input
-                    ref={writingTask2DragDrop.inputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={(event) => { const file = event.target.files?.[0] || null; onSkillAssetChange('writingTask2', file); event.target.value = ''; }}
-                    className="workbench-input workbench-file-input"
-                  />
-                  <div className="workbench-file-drop-hint">
-                    <span className="workbench-file-drop-icon" aria-hidden="true">🖼️</span>
-                    <span className="workbench-file-drop-text">
-                      {writingTask2File ? (
-                        <>🖼️ {writingTask2File.name}</>
-                      ) : (
-                        <>Drag Task 2 image or <button type="button" onClick={() => writingTask2DragDrop.trigger()} className="workbench-file-drop-link">browse</button> or paste</>
-                      )}
-                    </span>
+                <label className="workbench-field">
+                  <span className="field-label">Writing Task 2 Image</span>
+                  <div
+                    ref={writingTask2DragDrop.zoneRef}
+                    className={`workbench-file-drop-zone ${writingTask2DragDrop.isDragging ? 'is-dragging' : ''}`}
+                    onDragEnter={writingTask2DragDrop.handleDragEnter}
+                    onDragLeave={writingTask2DragDrop.handleDragLeave}
+                    onDragOver={writingTask2DragDrop.handleDragOver}
+                    onDrop={writingTask2DragDrop.handleDrop}
+                  >
+                    <input
+                      ref={writingTask2DragDrop.inputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={(event) => { const file = event.target.files?.[0] || null; onSkillAssetChange('writingTask2', file); event.target.value = ''; }}
+                      className="workbench-input workbench-file-input"
+                    />
+                    <div className="workbench-file-drop-hint">
+                      <span className="workbench-file-drop-icon" aria-hidden="true">🖼️</span>
+                      <span className="workbench-file-drop-text">
+                        {writingTask2File ? (
+                          <>🖼️ {writingTask2File.name}</>
+                        ) : (
+                          <>Drag Task 2 image or <button type="button" onClick={() => writingTask2DragDrop.trigger()} className="workbench-file-drop-link">browse</button> or paste</>
+                        )}
+                      </span>
+                    </div>
                   </div>
+                </label>
+              </div>
+
+              <div className="workbench-field workbench-field-wide workbench-writing-rule-field">
+                <span className="field-label">Writing Submission Rule</span>
+
+                <div className="workbench-writing-rule-options">
+                  <button
+                    type="button"
+                    className={`workbench-writing-rule-option ${draft.writingRule === 'overtime' ? 'is-active' : ''}`}
+                    onClick={() => setWritingRule('overtime')}
+                  >
+                    <span className="workbench-writing-rule-title">
+                      <i className="fas fa-hourglass-half" aria-hidden="true" />
+                      Over 60 minutes allowed
+                    </span>
+                    <span className="workbench-writing-rule-desc">
+                      Students may continue after 60 minutes, but can only submit when minimum word count is reached.
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`workbench-writing-rule-option ${draft.writingRule === 'auto-submit' ? 'is-active' : ''}`}
+                    onClick={() => setWritingRule('auto-submit')}
+                  >
+                    <span className="workbench-writing-rule-title">
+                      <i className="fas fa-stopwatch" aria-hidden="true" />
+                      Strict 60-minute timer
+                    </span>
+                    <span className="workbench-writing-rule-desc">
+                      Students must finish within 60 minutes. When time expires, the system auto-submits regardless of word count.
+                    </span>
+                  </button>
                 </div>
-              </label>
-            </div>
+
+                <p className={`workbench-field-note ${isValidWritingRule(draft.writingRule) ? '' : 'workbench-field-note-error'}`}>
+                  {isValidWritingRule(draft.writingRule)
+                    ? `Selected rule: ${draft.writingRule === 'overtime' ? 'Overtime + minimum words required' : 'Strict 60 minutes + auto-submit on timeout'}`
+                    : 'Choose one rule before submitting a writing test.'}
+                </p>
+              </div>
+            </>
           ) : (
             <label className="workbench-field">
               <span className="field-label">
@@ -1166,6 +1223,18 @@ export function UploadTestWorkbench() {
             <span className="workbench-pill">
               Answer keys: <strong className="workbench-pill-value">{answerKeyCount}</strong>
             </span>
+            {draft.skill === 'writing' ? (
+              <span className="workbench-pill">
+                Rule:{' '}
+                <strong className="workbench-pill-value">
+                  {draft.writingRule === 'overtime'
+                    ? 'Overtime + min words'
+                    : draft.writingRule === 'auto-submit'
+                      ? '60m auto-submit'
+                      : 'Not selected'}
+                </strong>
+              </span>
+            ) : null}
             {canExtractQuestions ? (
               <span className="workbench-pill">
                 Warnings: <strong className="workbench-pill-value">{extraction.warnings.length}</strong>
@@ -1176,7 +1245,11 @@ export function UploadTestWorkbench() {
           <p className="workbench-helper-note">
             {canExtractQuestions
               ? 'Page range is automatic: all pages.'
-              : 'Writing mode skips extraction. Upload Task 1 and Task 2 materials, then submit.'}
+              : isValidWritingRule(draft.writingRule)
+                ? draft.writingRule === 'overtime'
+                  ? 'Writing mode: students may exceed 60 minutes, but submission requires minimum word count.'
+                  : 'Writing mode: 60-minute timer with auto-submit at timeout, regardless of word count.'
+                : 'Writing mode: choose a submission rule, upload Task 1 and Task 2 materials, then submit.'}
           </p>
         </div>
       </div>
