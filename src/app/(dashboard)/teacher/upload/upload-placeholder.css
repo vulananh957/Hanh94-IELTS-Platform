@@ -571,55 +571,50 @@
 }
 
 .workbench-writing-rule-field {
-  grid-column: 1 / -1;
+  align-self: stretch;
 }
 
 .workbench-writing-rule-options {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.62rem;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.42rem;
 }
 
 .workbench-writing-rule-option {
-  border: 1px solid rgba(15, 118, 110, 0.22);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.94);
-  color: #0f172a;
-  padding: 0.68rem 0.74rem;
-  text-align: left;
+  flex: 1 1 0;
+  min-width: 0;
+  border: 1px solid rgba(15, 118, 110, 0.24);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.95);
+  color: #0f766e;
+  padding: 0.48rem 0.56rem;
+  text-align: center;
   cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: 0.34rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.36rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1.25;
   transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
 .workbench-writing-rule-option:hover {
   border-color: rgba(15, 118, 110, 0.46);
   transform: translateY(-1px);
-  box-shadow: 0 10px 18px rgba(15, 118, 110, 0.12);
+  box-shadow: 0 8px 14px rgba(15, 118, 110, 0.12);
 }
 
 .workbench-writing-rule-option.is-active {
   border-color: rgba(15, 118, 110, 0.68);
-  background: linear-gradient(135deg, rgba(15, 118, 110, 0.12), rgba(62, 168, 121, 0.15));
-  box-shadow: 0 12px 22px rgba(15, 118, 110, 0.16);
+  color: #ffffff;
+  background: linear-gradient(135deg, #0f766e, #2f9b75);
+  box-shadow: 0 10px 18px rgba(15, 118, 110, 0.18);
 }
 
-.workbench-writing-rule-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  color: #0f766e;
-  font-size: 0.83rem;
-  font-weight: 800;
-  line-height: 1.35;
-}
-
-.workbench-writing-rule-desc {
-  color: #475569;
-  font-size: 0.77rem;
-  line-height: 1.46;
+.workbench-writing-rule-option i {
+  font-size: 0.82rem;
 }
 
 .workbench-listening-answer-sheet {
@@ -2002,11 +1997,14 @@
   .workbench-listening-grid,
   .workbench-listening-panel,
   .workbench-listening-audio-grid,
-  .workbench-writing-rule-options,
   .workbench-writing-material-grid,
   .workbench-stage-grid,
   .workbench-loading-grid {
     grid-template-columns: 1fr;
+  }
+
+  .workbench-writing-rule-options {
+    flex-wrap: wrap;
   }
 
   .workbench-stage-preview {

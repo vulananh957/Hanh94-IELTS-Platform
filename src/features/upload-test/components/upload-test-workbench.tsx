@@ -863,46 +863,6 @@ export function UploadTestWorkbench() {
                   </div>
                 </label>
               </div>
-
-              <div className="workbench-field workbench-field-wide workbench-writing-rule-field">
-                <span className="field-label">Writing Submission Rule</span>
-
-                <div className="workbench-writing-rule-options">
-                  <button
-                    type="button"
-                    className={`workbench-writing-rule-option ${draft.writingRule === 'overtime' ? 'is-active' : ''}`}
-                    onClick={() => setWritingRule('overtime')}
-                  >
-                    <span className="workbench-writing-rule-title">
-                      <i className="fas fa-hourglass-half" aria-hidden="true" />
-                      Over 60 minutes allowed
-                    </span>
-                    <span className="workbench-writing-rule-desc">
-                      Students may continue after 60 minutes, but can only submit when minimum word count is reached.
-                    </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={`workbench-writing-rule-option ${draft.writingRule === 'auto-submit' ? 'is-active' : ''}`}
-                    onClick={() => setWritingRule('auto-submit')}
-                  >
-                    <span className="workbench-writing-rule-title">
-                      <i className="fas fa-stopwatch" aria-hidden="true" />
-                      Strict 60-minute timer
-                    </span>
-                    <span className="workbench-writing-rule-desc">
-                      Students must finish within 60 minutes. When time expires, the system auto-submits regardless of word count.
-                    </span>
-                  </button>
-                </div>
-
-                <p className={`workbench-field-note ${isValidWritingRule(draft.writingRule) ? '' : 'workbench-field-note-error'}`}>
-                  {isValidWritingRule(draft.writingRule)
-                    ? `Selected rule: ${draft.writingRule === 'overtime' ? 'Overtime + minimum words required' : 'Strict 60 minutes + auto-submit on timeout'}`
-                    : 'Choose one rule before submitting a writing test.'}
-                </p>
-              </div>
             </>
           ) : (
             <label className="workbench-field">
@@ -1015,6 +975,42 @@ export function UploadTestWorkbench() {
               <p className="workbench-field-note">Locked mode: test is created but not assigned to any class yet.</p>
             ) : null}
           </div>
+
+          {draft.skill === 'writing' ? (
+            <div className="workbench-field workbench-writing-rule-field">
+              <span className="field-label">Writing Submission Rule</span>
+
+              <div className="workbench-writing-rule-options">
+                <button
+                  type="button"
+                  className={`workbench-writing-rule-option ${draft.writingRule === 'overtime' ? 'is-active' : ''}`}
+                  onClick={() => setWritingRule('overtime')}
+                  title="Allow overtime; require minimum words to submit"
+                >
+                  <i className="fas fa-hourglass-half" aria-hidden="true" />
+                  <span>Overtime + min words</span>
+                </button>
+
+                <button
+                  type="button"
+                  className={`workbench-writing-rule-option ${draft.writingRule === 'auto-submit' ? 'is-active' : ''}`}
+                  onClick={() => setWritingRule('auto-submit')}
+                  title="Strict 60 minutes; auto-submit when time is up"
+                >
+                  <i className="fas fa-stopwatch" aria-hidden="true" />
+                  <span>60m auto-submit</span>
+                </button>
+              </div>
+
+              <p className={`workbench-field-note ${isValidWritingRule(draft.writingRule) ? '' : 'workbench-field-note-error'}`}>
+                {isValidWritingRule(draft.writingRule)
+                  ? draft.writingRule === 'overtime'
+                    ? 'Selected: Overtime allowed, but minimum words are required to submit.'
+                    : 'Selected: Strict 60-minute timer with auto-submit on timeout.'
+                  : 'Choose one writing rule before submitting this writing test.'}
+              </p>
+            </div>
+          ) : null}
 
           {draft.skill === 'listening' ? (
             <div className="workbench-listening-panel">
