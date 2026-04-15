@@ -31,6 +31,13 @@ interface ExtractionState {
   lastExtractedAt: number | null;
 }
 
+interface CreatePayloadSnapshot {
+  skill?: DraftSkill;
+  testName?: string;
+  writingRule?: WritingRule | null;
+  classAssignment?: TestClassAssignment;
+}
+
 interface UploadTestStore {
   step: UploadStep;
   draft: TestDraft;
@@ -71,7 +78,11 @@ interface UploadTestStore {
   applyExtractionResult: (payload: ExtractedTestPayload, pageRange: string) => void;
   setExtractionLoading: (pageRange: string) => void;
   setExtractionError: (message: string) => void;
-  buildCreateTestPayload: (uploadedFiles: Record<string, string[]>, partsOverride?: TestPart[]) => CreateTestPayload | null;
+  buildCreateTestPayload: (
+    uploadedFiles: Record<string, string[]>,
+    partsOverride?: TestPart[],
+    snapshot?: CreatePayloadSnapshot,
+  ) => CreateTestPayload | null;
   resetDraft: () => void;
 }
 
@@ -789,22 +800,27 @@ export const useUploadTestStore = create<UploadTestStore>((set, get) => ({
       },
     })),
 
-  buildCreateTestPayload: (uploadedFiles, partsOverride) => {
+  buildCreateTestPayload: (uploadedFiles, partsOverride, snapshot) => {
     const state = get();
-    const skill = state.draft.skill;
+    const skillCandidate = snapshot?.skill ?? state.draft.skill;
+    if (!ensureValidSkill(skillCandidate)) {
+      return null;
+    }
+    const skill = skillCandidate;
+    const resolvedTestName = String(snapshot?.testName ?? state.draft.testName ?? '').trim();
 
-    if (!ensureValidSkill(skill) || !state.draft.testName.trim()) {
+    if (!resolvedTestName) {
       return null;
     }
 
     const sourceParts = Array.isArray(partsOverride) ? partsOverride : (state.draft.parts || []);
     const normalizedParts = calculateQuestionNumbers(sourceParts);
     const sanitizedParts = sanitizePartsForCreate(normalizedParts);
-    if (sanitizedParts.length === 0) {
+    if (skill !== 'writing' && sanitizedParts.length === 0) {
       return null;
     }
 
-    const finalParts = calculateQuestionNumbers(sanitizedParts);
+    const finalParts = sanitizedParts.length > 0 ? calculateQuestionNumbers(sanitizedParts) : [];
     const answerKey = generateAnswerKey(finalParts);
 
     const sanitizedFiles = Object.fromEntries(
@@ -813,24 +829,26 @@ export const useUploadTestStore = create<UploadTestStore>((set, get) => ({
         .filter(([, urls]) => (urls as string[]).length > 0),
     ) as Record<string, string[]>;
 
+    const sourceClassAssignment = snapshot?.classAssignment ?? state.draft.classAssignment;
+
     const selectedClasses = Array.from(
-      new Set((state.draft.classAssignment.selectedClasses || []).map((id) => String(id || '').trim()).filter(Boolean)),
+      new Set((sourceClassAssignment.selectedClasses || []).map((id) => String(id || '').trim()).filter(Boolean)),
     );
 
     const classAssignment: TestClassAssignment = {
-      distribution: state.draft.classAssignment.distribution === 'specific' ? 'specific' : 'all',
+      distribution: sourceClassAssignment.distribution === 'specific' ? 'specific' : 'all',
       selectedClasses,
     };
 
     return {
-      name: state.draft.testName.trim(),
+      name: resolvedTestName,
       skill,
       metadata: {
         parts: finalParts,
       },
       files: sanitizedFiles,
       answerKey,
-      writingRule: state.draft.writingRule || null,
+      writingRule: snapshot?.writingRule ?? state.draft.writingRule ?? null,
       classAssignment,
     };
   },

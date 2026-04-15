@@ -699,9 +699,14 @@ export function UploadTestWorkbench() {
         parts: draft.parts,
       });
 
-      const finalPayload = buildCreateTestPayload(uploadedFiles, partsWithUploadedInlineImages);
+      const finalPayload = buildCreateTestPayload(uploadedFiles, partsWithUploadedInlineImages, {
+        skill,
+        testName,
+        writingRule: draft.writingRule,
+        classAssignment: draft.classAssignment,
+      });
       if (!finalPayload) {
-        throw new Error('Unable to build final payload for createTest.');
+        throw new Error(`Unable to build final payload for createTest (skill=${skill}, testName=${testName ? 'set' : 'empty'}).`);
       }
 
       console.log('[UploadTest] finalPayload before createTest:', finalPayload);
