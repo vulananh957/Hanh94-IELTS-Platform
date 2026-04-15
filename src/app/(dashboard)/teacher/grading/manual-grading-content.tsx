@@ -590,33 +590,31 @@ export function ManualGradingContent() {
               <button type="button" className="export-btn" onClick={handleExport}>
                 <i className="fas fa-file-export" /> Export to DOCX
               </button>
-              <label className="upload-btn">
+              <div
+                ref={feedbackDragDrop.zoneRef}
+                className={`upload-btn ${feedbackDragDrop.isDragging ? 'is-dragging' : ''}`}
+                onDragEnter={feedbackDragDrop.handleDragEnter}
+                onDragLeave={feedbackDragDrop.handleDragLeave}
+                onDragOver={feedbackDragDrop.handleDragOver}
+                onDrop={feedbackDragDrop.handleDrop}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    feedbackDragDrop.trigger();
+                  }
+                }}
+              >
                 <i className="fas fa-upload" /> Upload Feedback
-                <div
-                  ref={feedbackDragDrop.zoneRef}
-                  className={`workbench-file-drop-zone ${feedbackDragDrop.isDragging ? 'is-dragging' : ''}`}
-                  onDragEnter={feedbackDragDrop.handleDragEnter}
-                  onDragLeave={feedbackDragDrop.handleDragLeave}
-                  onDragOver={feedbackDragDrop.handleDragOver}
-                  onDrop={feedbackDragDrop.handleDrop}
-                >
-                  <input
-                    ref={feedbackDragDrop.inputRef}
-                    type="file"
-                    accept=".doc,.docx"
-                    onChange={(event) => { const file = event.target.files?.[0] || null; setFeedbackFile(file); event.target.value = ''; }}
-                  />
-                  {feedbackFile ? (
-                    <span className="workbench-file-drop-text" onClick={() => feedbackDragDrop.trigger()}>
-                      📄 {feedbackFile.name}
-                    </span>
-                  ) : (
-                    <span className="workbench-file-drop-text">
-                      Drop or <button type="button" className="workbench-file-drop-link" onClick={() => feedbackDragDrop.trigger()}>browse</button>
-                    </span>
-                  )}
-                </div>
-              </label>
+                <input
+                  ref={feedbackDragDrop.inputRef}
+                  type="file"
+                  accept=".doc,.docx"
+                  onChange={(event) => { const file = event.target.files?.[0] || null; setFeedbackFile(file); event.target.value = ''; }}
+                  aria-label="Upload feedback file"
+                />
+              </div>
             </div>
 
             <div className="grading-modal-body">

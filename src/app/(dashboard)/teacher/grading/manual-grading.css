@@ -287,6 +287,11 @@
   gap: 0.45rem;
 }
 
+.upload-btn.is-dragging {
+  background: #2f855a;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55) inset;
+}
+
 .upload-btn input {
   position: absolute;
   inset: 0;
