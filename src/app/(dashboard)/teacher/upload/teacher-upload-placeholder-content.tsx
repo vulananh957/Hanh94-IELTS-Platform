@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
+import { clearAuthState, getUserRole, redirectPathByRole } from '@/services/auth';
 import { firebaseApp } from '@/services/firebase';
 import { UploadTestWorkbench } from '../../../../features/upload-test/components/upload-test-workbench';
 import '../teacher-dashboard.css';
@@ -22,17 +23,55 @@ export function TeacherUploadPlaceholderContent() {
 
   const [user, setUser] = useState<TeacherUser | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isAuthorizing, setIsAuthorizing] = useState(true);
+  const [accessError, setAccessError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!auth) return;
+    let active = true;
+
     const unsub = onAuthStateChanged(auth, (currentUser) => {
       if (!currentUser) {
-        router.push('/login');
+        if (!active) return;
+        clearAuthState();
+        setUser(null);
+        setIsAuthorizing(false);
+        router.replace('/login');
         return;
       }
-      setUser(currentUser);
+
+      void (async () => {
+        try {
+          const role = await getUserRole(currentUser);
+          if (!active) return;
+
+          if (role !== 'teacher' && role !== 'testCreator') {
+            setAccessError('Only teacher or test creator accounts can access Upload Test.');
+            setUser(null);
+            router.replace(redirectPathByRole(role));
+            return;
+          }
+
+          setAccessError(null);
+          setUser(currentUser);
+        } catch (err) {
+          if (!active) return;
+          setAccessError(err instanceof Error ? err.message : 'Failed to verify account role.');
+          setUser(null);
+          clearAuthState();
+          router.replace('/login');
+        } finally {
+          if (active) {
+            setIsAuthorizing(false);
+          }
+        }
+      })();
     });
-    return () => unsub();
+
+    return () => {
+      active = false;
+      unsub();
+    };
   }, [auth, router]);
 
   useEffect(() => {
@@ -76,6 +115,32 @@ export function TeacherUploadPlaceholderContent() {
       router.push('/login');
     }
   };
+
+  if (isAuthorizing) {
+    return (
+      <div className="dashboard-container upload-page">
+        <main className="main-content">
+          <div className="content-area">
+            <section className="upload-workbench-shell">
+              <div className="workbench-alert workbench-alert-loading">Verifying account permissions...</div>
+            </section>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="dashboard-container upload-page">
+        <main className="main-content">
+          <div className="content-area">
+            {accessError ? <div className="workbench-alert workbench-alert-error">{accessError}</div> : null}
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="dashboard-container upload-page">

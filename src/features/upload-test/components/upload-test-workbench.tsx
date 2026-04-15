@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { getStoredAuth } from '@/services/auth';
 import { ExtractionLoadingPanel } from './extraction-loading-panel';
 import { ReviewEditorPane } from './review-editor-pane';
 import { SourceDocumentViewer } from './source-document-viewer';
@@ -78,6 +79,11 @@ function isTrueFalseOrYesNoType(typeLabel: string): boolean {
 
 function isValidWritingRule(value: unknown): value is WritingRule {
   return value === 'auto-submit' || value === 'overtime';
+}
+
+function canUploadTestsForRole(role: string | null | undefined): boolean {
+  if (!role) return true;
+  return role === 'teacher' || role === 'testCreator';
 }
 
 function splitListeningAnswerSheet(value: string): string[] {
@@ -652,6 +658,15 @@ export function UploadTestWorkbench() {
 
   async function handleSubmit() {
     if (submitStatus === 'loading') return;
+
+    const storedRole = getStoredAuth()?.role || null;
+    if (!canUploadTestsForRole(storedRole)) {
+      setSubmitStatus('error');
+      setSubmitMessage('Access denied. Student accounts cannot upload tests on teacher pages.');
+      alert('Access denied: student accounts cannot upload tests on teacher pages.');
+      router.push(storedRole === 'student' ? '/student' : '/login');
+      return;
+    }
 
     const skill = draft.skill;
     if (!skill) {
