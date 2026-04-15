@@ -707,7 +707,7 @@ export function UploadTestWorkbench() {
               <option value="">Select skill</option>
               <option value="reading">Reading</option>
               <option value="listening">Listening</option>
-              <option value="writing">Writing (manual-only for now)</option>
+              <option value="writing">Writing</option>
             </select>
           </label>
 
