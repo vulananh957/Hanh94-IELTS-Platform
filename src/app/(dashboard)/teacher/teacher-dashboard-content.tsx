@@ -377,7 +377,7 @@ export function TeacherDashboardContent() {
           ) : isLoading ? (
             <div className="loading-state" style={{ padding: '2rem' }}>
               <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-                <div className="spinner" />
+                  <div className="dashboard-loading-spinner" aria-hidden="true" />
                 <p style={{ color: 'var(--text-medium)', fontWeight: 500 }}>Loading dashboard...</p>
                 <p style={{ color: 'var(--text-light)', fontSize: '0.85rem', marginTop: '0.5rem' }}>{loadingProgress}</p>
               </div>

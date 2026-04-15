@@ -574,14 +574,23 @@
   color: var(--info);
 }
 
-.loading-state .spinner {
+.loading-state .dashboard-loading-spinner {
   width: 50px;
   height: 50px;
-  border: 4px solid var(--gray-200);
-  border-top: 4px solid var(--primary-medium);
+  border: 4px solid rgba(148, 163, 184, 0.25);
+  border-top: 4px solid var(--primary-medium, #40A578);
+  border-right: 4px solid rgba(64, 165, 120, 0.45);
   border-radius: 50%;
-  animation: spin 1s linear infinite;
+  animation: dashboardLoadingSpin 0.85s linear infinite;
+  will-change: transform;
   margin: 0 auto 1rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-state .dashboard-loading-spinner {
+    animation-duration: 1.1s !important;
+    animation-iteration-count: infinite !important;
+  }
 }
 
 .skeleton-card {
@@ -611,7 +620,7 @@
   cursor: pointer;
 }
 
-@keyframes spin {
+@keyframes dashboardLoadingSpin {
   0% {
     transform: rotate(0deg);
   }
