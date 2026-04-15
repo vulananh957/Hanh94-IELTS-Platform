@@ -468,10 +468,6 @@ export function CleanupContent() {
             <i className="fas fa-users-cog" />
             <span>Manage Users</span>
           </a>
-          <a href="/teacher/cleanup" className="nav-item active">
-            <i className="fas fa-broom" />
-            <span>Cleanup Data</span>
-          </a>
           <button type="button" className="nav-item" onClick={handleLogout}>
             <i className="fas fa-sign-out-alt" />
             <span>Logout</span>

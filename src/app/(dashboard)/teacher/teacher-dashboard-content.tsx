@@ -323,10 +323,6 @@ export function TeacherDashboardContent() {
             <i className="fas fa-users-cog"></i>
             <span>Manage Users</span>
           </a>
-          <a href="/teacher/cleanup" className="nav-item">
-            <i className="fas fa-broom"></i>
-            <span>Cleanup Data</span>
-          </a>
           <button type="button" onClick={handleLogout} className="nav-item">
             <i className="fas fa-sign-out-alt"></i>
             <span>Logout</span>
@@ -458,11 +454,6 @@ export function TeacherDashboardContent() {
                     <div className="quick-action-icon"><i className="fas fa-users-cog" /></div>
                     <div className="quick-action-title">Manage Users</div>
                     <div className="quick-action-desc">Manage all user roles</div>
-                  </a>
-                  <a href="/teacher/cleanup" className="quick-action">
-                    <div className="quick-action-icon"><i className="fas fa-broom" /></div>
-                    <div className="quick-action-title">Cleanup Data</div>
-                    <div className="quick-action-desc">Delete orphan attempts/results</div>
                   </a>
                 </div>
               </div>
