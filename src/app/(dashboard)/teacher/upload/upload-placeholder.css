@@ -563,6 +563,13 @@
   gap: 0.82rem;
 }
 
+.workbench-writing-material-grid {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.82rem;
+}
+
 .workbench-listening-answer-sheet {
   align-self: stretch;
   min-height: 100%;
@@ -1943,6 +1950,7 @@
   .workbench-listening-grid,
   .workbench-listening-panel,
   .workbench-listening-audio-grid,
+  .workbench-writing-material-grid,
   .workbench-stage-grid,
   .workbench-loading-grid {
     grid-template-columns: 1fr;

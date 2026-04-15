@@ -370,14 +370,16 @@ export async function uploadDraftFilesForCreate(input: {
     const task1 = input.files.writingTask1?.[0];
     const task2 = input.files.writingTask2?.[0];
 
-    if (task1 && task2) {
-      filesOut.writingTask1 = [
-        await uploadFromRef(`${basePath}/writing`, task1.name || 'writing_task1', task1),
-      ];
-      filesOut.writingTask2 = [
-        await uploadFromRef(`${basePath}/writing`, task2.name || 'writing_task2', task2),
-      ];
+    if (!task1 || !task2) {
+      throw new Error('Writing test requires both Task 1 and Task 2 material images.');
     }
+
+    filesOut.writingTask1 = [
+      await uploadFromRef(`${basePath}/writing`, task1.name || 'writing_task1', task1),
+    ];
+    filesOut.writingTask2 = [
+      await uploadFromRef(`${basePath}/writing`, task2.name || 'writing_task2', task2),
+    ];
   }
 
   return filesOut;

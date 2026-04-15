@@ -284,6 +284,8 @@ function toUploadFileRef(file: File): UploadFileRef {
 export function UploadTestWorkbench() {
   const router = useRouter();
   const [sourceFile, setSourceFile] = useState<File | null>(null);
+  const [writingTask1File, setWritingTask1File] = useState<File | null>(null);
+  const [writingTask2File, setWritingTask2File] = useState<File | null>(null);
   const [listeningPart1File, setListeningPart1File] = useState<File | null>(null);
   const [listeningPart2File, setListeningPart2File] = useState<File | null>(null);
   const [listeningPart3File, setListeningPart3File] = useState<File | null>(null);
@@ -304,6 +306,17 @@ export function UploadTestWorkbench() {
   const sourceDragDrop = useFileInputWithDragDrop({
     onFileSelect: onFileChange,
     acceptedTypes: ['.pdf', '.doc', '.docx', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'image/*'],
+  });
+
+  // Drag-drop handlers for writing task images
+  const writingTask1DragDrop = useFileInputWithDragDrop({
+    onFileSelect: (file) => onSkillAssetChange('writingTask1', file),
+    acceptedTypes: ['image/*'],
+  });
+
+  const writingTask2DragDrop = useFileInputWithDragDrop({
+    onFileSelect: (file) => onSkillAssetChange('writingTask2', file),
+    acceptedTypes: ['image/*'],
   });
 
   // Drag-drop handlers for listening audio parts
@@ -535,11 +548,22 @@ export function UploadTestWorkbench() {
         setListeningAnswerSheet('');
       }
 
+      if (nextSkill !== 'writing') {
+        setWritingTask1File(null);
+        setWritingTask2File(null);
+        setFilesForBucket('writingTask1', []);
+        setFilesForBucket('writingTask2', []);
+      }
+
       return;
     }
 
     setSkill(null);
     setFilesForBucket('reading', []);
+    setWritingTask1File(null);
+    setWritingTask2File(null);
+    setFilesForBucket('writingTask1', []);
+    setFilesForBucket('writingTask2', []);
   }
 
   function onFileChange(nextFile: File | null) {
@@ -579,6 +603,12 @@ export function UploadTestWorkbench() {
     }
     if (bucket === 'listeningPart4') {
       setListeningPart4File(nextFile);
+    }
+    if (bucket === 'writingTask1') {
+      setWritingTask1File(nextFile);
+    }
+    if (bucket === 'writingTask2') {
+      setWritingTask2File(nextFile);
     }
     
     if (!nextFile) {
@@ -632,6 +662,16 @@ export function UploadTestWorkbench() {
       setSubmitStatus('error');
       setSubmitMessage('No extracted questions found. Please run extraction first.');
       return;
+    }
+
+    if (skill === 'writing') {
+      const hasTask1 = Boolean(draft.files.writingTask1?.[0]);
+      const hasTask2 = Boolean(draft.files.writingTask2?.[0]);
+      if (!hasTask1 || !hasTask2) {
+        setSubmitStatus('error');
+        setSubmitMessage('Please upload both writing task materials (Task 1 and Task 2).');
+        return;
+      }
     }
 
     setSubmitStatus('loading');
@@ -739,41 +779,105 @@ export function UploadTestWorkbench() {
             )}
           </label>
 
-          <label className="workbench-field">
-            <span className="field-label">
-              {draft.skill === 'reading'
-                ? 'Reading PDF / DOC / Image (Extraction + Submission)'
-                : draft.skill === 'listening'
-                  ? 'Listening PDF / DOC / Image (Extraction only)'
-                  : 'Source PDF / DOC / Image (Extraction)'}
-            </span>
-            <div
-              ref={sourceDragDrop.zoneRef}
-              className={`workbench-file-drop-zone ${sourceDragDrop.isDragging ? 'is-dragging' : ''}`}
-              onDragEnter={sourceDragDrop.handleDragEnter}
-              onDragLeave={sourceDragDrop.handleDragLeave}
-              onDragOver={sourceDragDrop.handleDragOver}
-              onDrop={sourceDragDrop.handleDrop}
-            >
-              <input
-                ref={sourceDragDrop.inputRef}
-                type="file"
-                accept={draft.skill === 'reading' ? '.pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*' : '.pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*'}
-                onChange={(event) => { const file = event.target.files?.[0] || null; onFileChange(file); event.target.value = ''; }}
-                className="workbench-input workbench-file-input"
-              />
-              <div className="workbench-file-drop-hint">
-                <span className="workbench-file-drop-icon" aria-hidden="true">📁</span>
-                <span className="workbench-file-drop-text">
-                  {sourceFile ? (
-                    <>📄 {sourceFile.name}</>
-                  ) : (
-                    <>Drag file here or <button type="button" onClick={() => sourceDragDrop.trigger()} className="workbench-file-drop-link">browse</button> or paste</>
-                  )}
-                </span>
-              </div>
+          {draft.skill === 'writing' ? (
+            <div className="workbench-writing-material-grid">
+              <label className="workbench-field">
+                <span className="field-label">Writing Task 1 Image</span>
+                <div
+                  ref={writingTask1DragDrop.zoneRef}
+                  className={`workbench-file-drop-zone ${writingTask1DragDrop.isDragging ? 'is-dragging' : ''}`}
+                  onDragEnter={writingTask1DragDrop.handleDragEnter}
+                  onDragLeave={writingTask1DragDrop.handleDragLeave}
+                  onDragOver={writingTask1DragDrop.handleDragOver}
+                  onDrop={writingTask1DragDrop.handleDrop}
+                >
+                  <input
+                    ref={writingTask1DragDrop.inputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => { const file = event.target.files?.[0] || null; onSkillAssetChange('writingTask1', file); event.target.value = ''; }}
+                    className="workbench-input workbench-file-input"
+                  />
+                  <div className="workbench-file-drop-hint">
+                    <span className="workbench-file-drop-icon" aria-hidden="true">🖼️</span>
+                    <span className="workbench-file-drop-text">
+                      {writingTask1File ? (
+                        <>🖼️ {writingTask1File.name}</>
+                      ) : (
+                        <>Drag Task 1 image or <button type="button" onClick={() => writingTask1DragDrop.trigger()} className="workbench-file-drop-link">browse</button> or paste</>
+                      )}
+                    </span>
+                  </div>
+                </div>
+              </label>
+
+              <label className="workbench-field">
+                <span className="field-label">Writing Task 2 Image</span>
+                <div
+                  ref={writingTask2DragDrop.zoneRef}
+                  className={`workbench-file-drop-zone ${writingTask2DragDrop.isDragging ? 'is-dragging' : ''}`}
+                  onDragEnter={writingTask2DragDrop.handleDragEnter}
+                  onDragLeave={writingTask2DragDrop.handleDragLeave}
+                  onDragOver={writingTask2DragDrop.handleDragOver}
+                  onDrop={writingTask2DragDrop.handleDrop}
+                >
+                  <input
+                    ref={writingTask2DragDrop.inputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => { const file = event.target.files?.[0] || null; onSkillAssetChange('writingTask2', file); event.target.value = ''; }}
+                    className="workbench-input workbench-file-input"
+                  />
+                  <div className="workbench-file-drop-hint">
+                    <span className="workbench-file-drop-icon" aria-hidden="true">🖼️</span>
+                    <span className="workbench-file-drop-text">
+                      {writingTask2File ? (
+                        <>🖼️ {writingTask2File.name}</>
+                      ) : (
+                        <>Drag Task 2 image or <button type="button" onClick={() => writingTask2DragDrop.trigger()} className="workbench-file-drop-link">browse</button> or paste</>
+                      )}
+                    </span>
+                  </div>
+                </div>
+              </label>
             </div>
-          </label>
+          ) : (
+            <label className="workbench-field">
+              <span className="field-label">
+                {draft.skill === 'reading'
+                  ? 'Reading PDF / DOC / Image (Extraction + Submission)'
+                  : draft.skill === 'listening'
+                    ? 'Listening PDF / DOC / Image (Extraction only)'
+                    : 'Source PDF / DOC / Image (Extraction)'}
+              </span>
+              <div
+                ref={sourceDragDrop.zoneRef}
+                className={`workbench-file-drop-zone ${sourceDragDrop.isDragging ? 'is-dragging' : ''}`}
+                onDragEnter={sourceDragDrop.handleDragEnter}
+                onDragLeave={sourceDragDrop.handleDragLeave}
+                onDragOver={sourceDragDrop.handleDragOver}
+                onDrop={sourceDragDrop.handleDrop}
+              >
+                <input
+                  ref={sourceDragDrop.inputRef}
+                  type="file"
+                  accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*"
+                  onChange={(event) => { const file = event.target.files?.[0] || null; onFileChange(file); event.target.value = ''; }}
+                  className="workbench-input workbench-file-input"
+                />
+                <div className="workbench-file-drop-hint">
+                  <span className="workbench-file-drop-icon" aria-hidden="true">📁</span>
+                  <span className="workbench-file-drop-text">
+                    {sourceFile ? (
+                      <>📄 {sourceFile.name}</>
+                    ) : (
+                      <>Drag file here or <button type="button" onClick={() => sourceDragDrop.trigger()} className="workbench-file-drop-link">browse</button> or paste</>
+                    )}
+                  </span>
+                </div>
+              </div>
+            </label>
+          )}
 
           <div className="workbench-field workbench-assignment-field">
             <span className="field-label">Class Assignment</span>
