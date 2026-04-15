@@ -441,6 +441,7 @@ export function UploadTestWorkbench() {
 
   const answerKeyCount = useMemo(() => Object.keys(answerKeyPreview).length, [answerKeyPreview]);
   const isSubmitDisabled = submitStatus === 'loading';
+  const canExtractQuestions = draft.skill === 'reading' || draft.skill === 'listening';
 
   function applyAssignmentMode(nextMode: Exclude<AssignmentMode, null>) {
     if (nextMode === 'all') {
@@ -1107,30 +1108,34 @@ export function UploadTestWorkbench() {
 
         <div className="workbench-action-panel">
           <div className="workbench-btn-row">
-            <button
-              type="button"
-              className="workbench-btn workbench-btn-extract"
-              onClick={runExtraction}
-              disabled={extraction.status === 'loading'}
-            >
-              <span className="workbench-btn-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" className="workbench-btn-icon-svg">
-                  <path
-                    d="M6 3.5h8l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 5 20V5A1.5 1.5 0 0 1 6.5 3.5z"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                  <path d="M14 3.5V8h4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                  <path d="M8 11.5h5M8 14.5h8M8 17.5h6" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  <circle cx="18.5" cy="18.5" r="3.2" fill="#f0fdf4" stroke="currentColor" strokeWidth="1.4" />
-                  <path d="M17.4 18.5h2.2M18.5 17.4v2.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                </svg>
-              </span>
-              <span>{extraction.status === 'loading' ? 'Analyzing...' : 'Extract Questions'}</span>
-            </button>
+            {canExtractQuestions ? (
+              <button
+                type="button"
+                className="workbench-btn workbench-btn-extract"
+                onClick={runExtraction}
+                disabled={extraction.status === 'loading'}
+              >
+                <span className="workbench-btn-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" className="workbench-btn-icon-svg">
+                    <path
+                      d="M6 3.5h8l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 5 20V5A1.5 1.5 0 0 1 6.5 3.5z"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path d="M14 3.5V8h4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    <path d="M8 11.5h5M8 14.5h8M8 17.5h6" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <circle cx="18.5" cy="18.5" r="3.2" fill="#f0fdf4" stroke="currentColor" strokeWidth="1.4" />
+                    <path d="M17.4 18.5h2.2M18.5 17.4v2.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                  </svg>
+                </span>
+                <span>{extraction.status === 'loading' ? 'Analyzing...' : 'Extract Questions'}</span>
+              </button>
+            ) : (
+              <span className="workbench-pill">Writing mode: extraction is disabled.</span>
+            )}
 
             <div className="workbench-submit-group">
               <button
@@ -1145,21 +1150,29 @@ export function UploadTestWorkbench() {
           </div>
 
           <div className="workbench-pill-row">
-            <span className="workbench-pill">
-              Status: <strong className="workbench-pill-value">{extraction.status}</strong>
-            </span>
+            {canExtractQuestions ? (
+              <span className="workbench-pill">
+                Status: <strong className="workbench-pill-value">{extraction.status}</strong>
+              </span>
+            ) : null}
             <span className="workbench-pill">
               Parts: <strong className="workbench-pill-value">{draft.parts.length}</strong>
             </span>
             <span className="workbench-pill">
               Answer keys: <strong className="workbench-pill-value">{answerKeyCount}</strong>
             </span>
-            <span className="workbench-pill">
-              Warnings: <strong className="workbench-pill-value">{extraction.warnings.length}</strong>
-            </span>
+            {canExtractQuestions ? (
+              <span className="workbench-pill">
+                Warnings: <strong className="workbench-pill-value">{extraction.warnings.length}</strong>
+              </span>
+            ) : null}
           </div>
 
-          <p className="workbench-helper-note">Page range is automatic: all pages.</p>
+          <p className="workbench-helper-note">
+            {canExtractQuestions
+              ? 'Page range is automatic: all pages.'
+              : 'Writing mode skips extraction. Upload Task 1 and Task 2 materials, then submit.'}
+          </p>
         </div>
       </div>
 
