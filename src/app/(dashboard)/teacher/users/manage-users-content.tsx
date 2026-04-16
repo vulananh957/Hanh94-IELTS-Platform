@@ -6,8 +6,12 @@ import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
 import { deleteDoc, doc, getFirestore, updateDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
 import {
+  addManageUser,
+  bulkImportStudents,
+  createManageClass,
   getManageUsersData,
   invalidateManageUsersCache,
+  type ManageUserRole,
   subscribeManageUsersRealtime,
   type ManageClassRecord,
   type ManageUserRecord,
@@ -42,9 +46,25 @@ export function ManageUsersContent() {
   const [movingFromClass, setMovingFromClass] = useState<ManageClassRecord | null>(null);
   const [moveTargetClassId, setMoveTargetClassId] = useState('');
   const [isMovingStudent, setIsMovingStudent] = useState(false);
+  const [showAddUserModal, setShowAddUserModal] = useState(false);
+  const [showCreateClassModal, setShowCreateClassModal] = useState(false);
+  const [showBulkImportModal, setShowBulkImportModal] = useState(false);
+  const [addUserEmail, setAddUserEmail] = useState('');
+  const [addUserRole, setAddUserRole] = useState<ManageUserRole>('student');
+  const [addUserClassCode, setAddUserClassCode] = useState('');
+  const [isAddingUser, setIsAddingUser] = useState(false);
+  const [newClassName, setNewClassName] = useState('');
+  const [newClassDescription, setNewClassDescription] = useState('');
+  const [isCreatingClass, setIsCreatingClass] = useState(false);
+  const [bulkImportClassCode, setBulkImportClassCode] = useState('');
+  const [bulkImportText, setBulkImportText] = useState('');
+  const [isBulkImporting, setIsBulkImporting] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const loadSeqRef = useRef(0);
   const hasAutoReloadedRef = useRef(false);
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -68,8 +88,8 @@ export function ManageUsersContent() {
     return () => unsubscribe();
   }, [auth, router]);
 
-  const loadData = async (options?: { showLoading?: boolean; forceFresh?: boolean }) => {
-    if (!user?.email) return;
+  const loadData = async (options?: { showLoading?: boolean; forceFresh?: boolean }): Promise<boolean> => {
+    if (!user?.email) return false;
 
     const { showLoading = true, forceFresh = false } = options || {};
     const seq = ++loadSeqRef.current;
@@ -83,18 +103,32 @@ export function ManageUsersContent() {
       }
 
       const payload = await getManageUsersData(user.email, forceFresh);
-      if (seq !== loadSeqRef.current) return;
+      if (seq !== loadSeqRef.current) return false;
 
       setUsers(payload.users);
       setClasses(payload.classes);
+      return true;
     } catch (err) {
-      if (seq !== loadSeqRef.current) return;
+      if (seq !== loadSeqRef.current) return false;
       setError(err instanceof Error ? err.message : 'Failed to load users data');
+      return false;
     } finally {
       if (seq === loadSeqRef.current && showLoading) {
         setIsLoading(false);
       }
     }
+  };
+
+  const showActionFeedback = (type: 'success' | 'error', message: string) => {
+    setActionFeedback({ type, message });
+    if (feedbackTimerRef.current) {
+      clearTimeout(feedbackTimerRef.current);
+    }
+
+    feedbackTimerRef.current = setTimeout(() => {
+      setActionFeedback(null);
+      feedbackTimerRef.current = null;
+    }, 4200);
   };
 
   useEffect(() => {
@@ -186,6 +220,15 @@ export function ManageUsersContent() {
       document.removeEventListener('mousemove', onMouseMove);
     };
   }, [sidebarOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (feedbackTimerRef.current) {
+        clearTimeout(feedbackTimerRef.current);
+        feedbackTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const classNameByCode = useMemo(() => {
     const map = new Map<string, string>();
@@ -287,8 +330,190 @@ export function ManageUsersContent() {
   }, [user]);
 
   const handleRefresh = async () => {
-    if (!user?.email) return;
-    await loadData({ showLoading: true, forceFresh: true });
+    if (!user?.email || isRefreshing) return;
+
+    try {
+      setIsRefreshing(true);
+      setError(null);
+      const success = await loadData({ showLoading: true, forceFresh: true });
+      if (success) {
+        showActionFeedback('success', 'Manage users data refreshed successfully.');
+      }
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  const openAddUserModal = (presetRole?: ManageUserRole) => {
+    const roleFromTab: ManageUserRole = activeTab === 'teachers'
+      ? 'teacher'
+      : activeTab === 'testCreators'
+        ? 'testCreator'
+        : 'student';
+
+    setAddUserEmail('');
+    setAddUserRole(presetRole || roleFromTab);
+    setAddUserClassCode('');
+    setShowAddUserModal(true);
+  };
+
+  const openCreateClassModal = () => {
+    setNewClassName('');
+    setNewClassDescription('');
+    setShowCreateClassModal(true);
+  };
+
+  const openBulkImportModal = () => {
+    setBulkImportClassCode('');
+    setBulkImportText('');
+    setShowBulkImportModal(true);
+  };
+
+  const handleAddUserSubmit = async () => {
+    if (isAddingUser) return;
+
+    const email = addUserEmail.trim();
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!email) {
+      showActionFeedback('error', 'Please enter an email address.');
+      return;
+    }
+
+    if (!emailPattern.test(email)) {
+      showActionFeedback('error', 'Please provide a valid email address.');
+      return;
+    }
+
+    if (addUserRole === 'student' && !addUserClassCode) {
+      showActionFeedback('error', 'Please assign a class for student accounts.');
+      return;
+    }
+
+    try {
+      setIsAddingUser(true);
+      setError(null);
+
+      const result = await addManageUser({
+        email,
+        role: addUserRole,
+        classCode: addUserRole === 'student' ? addUserClassCode : null,
+      });
+
+      if (!result.success) {
+        throw new Error(result.error || result.message || 'Failed to add user.');
+      }
+
+      setShowAddUserModal(false);
+      const refreshed = await loadData({ showLoading: true, forceFresh: true });
+      if (refreshed) {
+        showActionFeedback('success', `${email} was added successfully as ${addUserRole}.`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to add user.';
+      setError(message);
+      showActionFeedback('error', message);
+    } finally {
+      setIsAddingUser(false);
+    }
+  };
+
+  const handleCreateClassSubmit = async () => {
+    if (isCreatingClass) return;
+
+    const name = newClassName.trim();
+    const description = newClassDescription.trim();
+
+    if (!name) {
+      showActionFeedback('error', 'Please enter a class name.');
+      return;
+    }
+
+    try {
+      setIsCreatingClass(true);
+      setError(null);
+
+      const result = await createManageClass({ name, description });
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to create class.');
+      }
+
+      const generatedCode = String(result.classCode || result.code || '').trim();
+      setShowCreateClassModal(false);
+      const refreshed = await loadData({ showLoading: true, forceFresh: true });
+      if (refreshed) {
+        showActionFeedback(
+          'success',
+          generatedCode
+            ? `Class "${name}" created successfully (code: ${generatedCode}).`
+            : `Class "${name}" created successfully.`,
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to create class.';
+      setError(message);
+      showActionFeedback('error', message);
+    } finally {
+      setIsCreatingClass(false);
+    }
+  };
+
+  const handleBulkImportSubmit = async () => {
+    if (isBulkImporting) return;
+
+    const classCode = bulkImportClassCode.trim();
+    if (!classCode) {
+      showActionFeedback('error', 'Please select a destination class.');
+      return;
+    }
+
+    const rawLines = bulkImportText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (rawLines.length === 0) {
+      showActionFeedback('error', 'Please enter at least one student email.');
+      return;
+    }
+
+    const deduped = Array.from(new Set(rawLines.map((line) => line.toLowerCase())));
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const invalidEmails = deduped.filter((email) => !emailPattern.test(email));
+
+    if (invalidEmails.length > 0) {
+      showActionFeedback('error', `Invalid email format: ${invalidEmails[0]}`);
+      return;
+    }
+
+    try {
+      setIsBulkImporting(true);
+      setError(null);
+
+      const result = await bulkImportStudents({
+        classCode,
+        students: deduped.map((email) => ({ email, role: 'student' })),
+      });
+
+      if (!result.success) {
+        throw new Error(result.error || result.message || 'Failed to import students.');
+      }
+
+      setShowBulkImportModal(false);
+      setActiveTab('students');
+
+      const refreshed = await loadData({ showLoading: true, forceFresh: true });
+      if (refreshed) {
+        const importedCount = result.addedCount ?? deduped.length;
+        showActionFeedback('success', `Imported ${importedCount} student account(s) successfully.`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to import students.';
+      setError(message);
+      showActionFeedback('error', message);
+    } finally {
+      setIsBulkImporting(false);
+    }
   };
 
   const handleViewUser = (item: ManageUserRecord) => {
@@ -703,12 +928,35 @@ export function ManageUsersContent() {
                 <p className="header-subtitle">Manage teachers, students, test creators and classes</p>
               </div>
               <div className="header-actions">
-                <button className="action-btn" type="button"><i className="fas fa-user-plus" /> Add User</button>
-                <button className="action-btn secondary" type="button"><i className="fas fa-plus-circle" /> Create Class</button>
-                <button className="action-btn secondary" type="button"><i className="fas fa-file-import" /> Bulk Import</button>
-                <button className="action-btn secondary" type="button" onClick={handleRefresh}><i className="fas fa-sync-alt" /> Refresh</button>
+                <button className="action-btn" type="button" onClick={() => openAddUserModal()}>
+                  <i className="fas fa-user-plus" /> Add User
+                </button>
+                <button className="action-btn secondary" type="button" onClick={openCreateClassModal}>
+                  <i className="fas fa-plus-circle" /> Create Class
+                </button>
+                <button className="action-btn secondary" type="button" onClick={openBulkImportModal}>
+                  <i className="fas fa-file-import" /> Bulk Import
+                </button>
+                <button className="action-btn secondary" type="button" onClick={handleRefresh} disabled={isLoading || isRefreshing}>
+                  <i className="fas fa-sync-alt" /> {isRefreshing ? 'Refreshing...' : 'Refresh'}
+                </button>
               </div>
             </div>
+
+            {actionFeedback ? (
+              <div className={`action-feedback-banner ${actionFeedback.type}`} role="status">
+                <i className={`fas ${actionFeedback.type === 'success' ? 'fa-check-circle' : 'fa-exclamation-triangle'}`} />
+                <span>{actionFeedback.message}</span>
+                <button
+                  type="button"
+                  className="feedback-dismiss-btn"
+                  aria-label="Dismiss message"
+                  onClick={() => setActionFeedback(null)}
+                >
+                  <i className="fas fa-times" />
+                </button>
+              </div>
+            ) : null}
 
             {error ? (
               <div className="content-section empty-state">
@@ -811,7 +1059,7 @@ export function ManageUsersContent() {
                 <div className="section-header">
                   <div className="section-title">Classes Management</div>
                   <div className="header-actions">
-                    <button className="action-btn secondary" type="button">
+                    <button className="action-btn secondary" type="button" onClick={openCreateClassModal}>
                       <i className="fas fa-plus" /> Create Class
                     </button>
                   </div>
@@ -890,17 +1138,17 @@ export function ManageUsersContent() {
                   </div>
                   <div className="header-actions">
                     {activeTab === 'students' && (
-                      <button className="action-btn secondary" type="button">
+                      <button className="action-btn secondary" type="button" onClick={() => openAddUserModal('student')}>
                         <i className="fas fa-user-plus" /> Add Student
                       </button>
                     )}
                     {activeTab === 'teachers' && (
-                      <button className="action-btn secondary" type="button">
+                      <button className="action-btn secondary" type="button" onClick={() => openAddUserModal('teacher')}>
                         <i className="fas fa-user-plus" /> Add Teacher
                       </button>
                     )}
                     {activeTab === 'testCreators' && (
-                      <button className="action-btn secondary" type="button">
+                      <button className="action-btn secondary" type="button" onClick={() => openAddUserModal('testCreator')}>
                         <i className="fas fa-user-plus" /> Add Test Creator
                       </button>
                     )}
@@ -920,6 +1168,187 @@ export function ManageUsersContent() {
           </div>
         </div>
       </main>
+
+      {showAddUserModal ? (
+        <div className="manage-modal-overlay" role="dialog" aria-modal="true">
+          <div className="manage-modal-content action-modal">
+            <div className="manage-modal-header">
+              <h3>Add New User</h3>
+              <button type="button" className="manage-modal-close" onClick={() => setShowAddUserModal(false)} disabled={isAddingUser}>
+                <i className="fas fa-times" />
+              </button>
+            </div>
+
+            <div className="manage-modal-body">
+              <div className="edit-form-group">
+                <label className="form-label">Email Address</label>
+                <input
+                  className="form-input"
+                  type="email"
+                  placeholder="user@example.com"
+                  value={addUserEmail}
+                  onChange={(e) => setAddUserEmail(e.target.value)}
+                  disabled={isAddingUser}
+                />
+                <p className="edit-note">The system will automatically pull profile information from Google on first login.</p>
+              </div>
+
+              <div className="edit-form-group">
+                <label className="form-label">Role</label>
+                <select
+                  className="form-select"
+                  value={addUserRole}
+                  onChange={(e) => {
+                    setAddUserRole(e.target.value as ManageUserRole);
+                    setAddUserClassCode('');
+                  }}
+                  disabled={isAddingUser}
+                >
+                  <option value="student">Student</option>
+                  <option value="teacher">Teacher</option>
+                  <option value="testCreator">Test Creator</option>
+                </select>
+              </div>
+
+              {addUserRole === 'student' ? (
+                <div className="edit-form-group">
+                  <label className="form-label">Assign to Class</label>
+                  <select
+                    className="form-select"
+                    value={addUserClassCode}
+                    onChange={(e) => setAddUserClassCode(e.target.value)}
+                    disabled={isAddingUser}
+                  >
+                    <option value="">Select class...</option>
+                    {classes.map((cls) => {
+                      const value = cls.code || cls.id;
+                      return (
+                        <option key={cls.id} value={value}>
+                          {String(cls.name)} ({String(value).slice(0, 8).toUpperCase()})
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <p className="edit-note">Student accounts require a class assignment.</p>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="manage-modal-footer">
+              <button className="action-btn secondary" type="button" onClick={() => setShowAddUserModal(false)} disabled={isAddingUser}>
+                Cancel
+              </button>
+              <button className="action-btn" type="button" onClick={() => void handleAddUserSubmit()} disabled={isAddingUser}>
+                {isAddingUser ? 'Adding User...' : 'Add User'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showCreateClassModal ? (
+        <div className="manage-modal-overlay" role="dialog" aria-modal="true">
+          <div className="manage-modal-content action-modal">
+            <div className="manage-modal-header">
+              <h3>Create New Class</h3>
+              <button type="button" className="manage-modal-close" onClick={() => setShowCreateClassModal(false)} disabled={isCreatingClass}>
+                <i className="fas fa-times" />
+              </button>
+            </div>
+
+            <div className="manage-modal-body">
+              <div className="edit-form-group">
+                <label className="form-label">Class Name</label>
+                <input
+                  className="form-input"
+                  type="text"
+                  placeholder="e.g., IELTS Advanced A1"
+                  value={newClassName}
+                  onChange={(e) => setNewClassName(e.target.value)}
+                  disabled={isCreatingClass}
+                />
+                <p className="edit-note">Class code will be generated automatically and kept unique.</p>
+              </div>
+
+              <div className="edit-form-group">
+                <label className="form-label">Description (Optional)</label>
+                <textarea
+                  className="edit-textarea"
+                  placeholder="Brief description of this class..."
+                  value={newClassDescription}
+                  onChange={(e) => setNewClassDescription(e.target.value)}
+                  disabled={isCreatingClass}
+                />
+              </div>
+            </div>
+
+            <div className="manage-modal-footer">
+              <button className="action-btn secondary" type="button" onClick={() => setShowCreateClassModal(false)} disabled={isCreatingClass}>
+                Cancel
+              </button>
+              <button className="action-btn" type="button" onClick={() => void handleCreateClassSubmit()} disabled={isCreatingClass}>
+                {isCreatingClass ? 'Creating Class...' : 'Create Class'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showBulkImportModal ? (
+        <div className="manage-modal-overlay" role="dialog" aria-modal="true">
+          <div className="manage-modal-content bulk-import-modal">
+            <div className="manage-modal-header">
+              <h3>Bulk Import Students</h3>
+              <button type="button" className="manage-modal-close" onClick={() => setShowBulkImportModal(false)} disabled={isBulkImporting}>
+                <i className="fas fa-times" />
+              </button>
+            </div>
+
+            <div className="manage-modal-body">
+              <div className="edit-form-group">
+                <label className="form-label">Assign to Class</label>
+                <select
+                  className="form-select"
+                  value={bulkImportClassCode}
+                  onChange={(e) => setBulkImportClassCode(e.target.value)}
+                  disabled={isBulkImporting}
+                >
+                  <option value="">Select class...</option>
+                  {classes.map((cls) => {
+                    const value = cls.code || cls.id;
+                    return (
+                      <option key={cls.id} value={value}>
+                        {String(cls.name)} ({String(value).slice(0, 8).toUpperCase()})
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              <div className="edit-form-group">
+                <label className="form-label">Student Email List</label>
+                <textarea
+                  className="edit-textarea bulk-import-textarea"
+                  placeholder={'student1@example.com\nstudent2@example.com\nstudent3@example.com'}
+                  value={bulkImportText}
+                  onChange={(e) => setBulkImportText(e.target.value)}
+                  disabled={isBulkImporting}
+                />
+                <p className="edit-note">One email per line. Duplicate lines are ignored automatically.</p>
+              </div>
+            </div>
+
+            <div className="manage-modal-footer">
+              <button className="action-btn secondary" type="button" onClick={() => setShowBulkImportModal(false)} disabled={isBulkImporting}>
+                Cancel
+              </button>
+              <button className="action-btn" type="button" onClick={() => void handleBulkImportSubmit()} disabled={isBulkImporting}>
+                {isBulkImporting ? 'Importing Students...' : 'Import Students'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {viewingClass ? (
         <div className="manage-modal-overlay" role="dialog" aria-modal="true">

@@ -5,6 +5,7 @@ import {
   onSnapshot,
   type Unsubscribe,
 } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
 import { firebaseApp } from './firebase';
 
 export interface ManageUserRecord {
@@ -30,7 +31,55 @@ export interface ManageUsersPayload {
   classes: ManageClassRecord[];
 }
 
+export type ManageUserRole = 'teacher' | 'student' | 'testCreator';
+
+export interface AddManageUserInput {
+  email: string;
+  role: ManageUserRole;
+  classCode?: string | null;
+}
+
+export interface AddManageUserResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
+
+export interface CreateManageClassInput {
+  name: string;
+  description?: string;
+}
+
+export interface CreateManageClassResponse {
+  success: boolean;
+  classCode?: string;
+  code?: string;
+  error?: string;
+}
+
+export interface BulkImportStudentInput {
+  email: string;
+  role?: 'student';
+}
+
+export interface BulkImportStudentsInput {
+  classCode: string;
+  students: BulkImportStudentInput[];
+}
+
+export interface BulkImportStudentsResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+  addedCount?: number;
+}
+
 const CACHE_DURATION = 60 * 1000;
+const PROJECT_ID = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'hanh94esl-71776';
+const USE_EMULATOR = process.env.NEXT_PUBLIC_USE_FUNCTIONS_EMULATOR === 'true';
+const FUNCTIONS_BASE_URL = USE_EMULATOR
+  ? `http://127.0.0.1:5001/${PROJECT_ID}/us-central1`
+  : `https://us-central1-${PROJECT_ID}.cloudfunctions.net`;
 const requestMap = new Map<string, Promise<ManageUsersPayload>>();
 
 function toStringSafe(value: unknown, fallback = ''): string {
@@ -42,6 +91,98 @@ function toStringSafe(value: unknown, fallback = ''): string {
 function getCacheKeys(email: string) {
   const key = `manage_users_${email}`;
   return { key, timeKey: `${key}_time` };
+}
+
+function getTokenFromStorageBag(bag: Storage): string | null {
+  const key = Object.keys(bag).find((item) => item.startsWith('firebase:authUser'));
+  if (!key) return null;
+
+  try {
+    const raw = bag.getItem(key);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw) as { stsTokenManager?: { accessToken?: string } };
+    return parsed?.stsTokenManager?.accessToken || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getIdToken(): Promise<string> {
+  const auth = getAuth(firebaseApp);
+
+  if (auth.currentUser) {
+    return auth.currentUser.getIdToken();
+  }
+
+  if (typeof window !== 'undefined') {
+    const localToken = getTokenFromStorageBag(localStorage);
+    if (localToken) return localToken;
+
+    const sessionToken = getTokenFromStorageBag(sessionStorage);
+    if (sessionToken) return sessionToken;
+  }
+
+  throw new Error('Unable to find Firebase ID token. Please sign in again.');
+}
+
+async function callManageUsersFunction<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  const token = await getIdToken();
+
+  const response = await fetch(`${FUNCTIONS_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const text = await response.text().catch(() => '');
+  let parsed = {} as T;
+
+  if (text) {
+    try {
+      parsed = JSON.parse(text) as T;
+    } catch {
+      parsed = {} as T;
+    }
+  }
+
+  if (!response.ok) {
+    const fallback = text || `Cloud Function ${path} failed (${response.status})`;
+    const reason = typeof parsed === 'object' && parsed !== null && 'error' in parsed
+      ? String((parsed as { error?: unknown }).error || fallback)
+      : fallback;
+    throw new Error(reason);
+  }
+
+  return parsed;
+}
+
+export async function addManageUser(input: AddManageUserInput): Promise<AddManageUserResponse> {
+  return callManageUsersFunction<AddManageUserResponse>('/addUser', {
+    email: input.email,
+    role: input.role,
+    classCode: input.role === 'student' ? (input.classCode || null) : null,
+  });
+}
+
+export async function createManageClass(input: CreateManageClassInput): Promise<CreateManageClassResponse> {
+  return callManageUsersFunction<CreateManageClassResponse>('/createClass', {
+    name: input.name,
+    description: input.description || '',
+  });
+}
+
+export async function bulkImportStudents(input: BulkImportStudentsInput): Promise<BulkImportStudentsResponse> {
+  return callManageUsersFunction<BulkImportStudentsResponse>('/bulkImportStudents', {
+    classCode: input.classCode,
+    students: input.students.map((student) => ({
+      email: student.email,
+      role: 'student',
+    })),
+  });
 }
 
 export function invalidateManageUsersCache(email: string): void {
