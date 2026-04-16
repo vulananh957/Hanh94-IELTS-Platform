@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { clearAuthState, getUserRole, redirectPathByRole } from '@/services/auth';
+import { clearAuthState, getStoredAuth, getUserRole, redirectPathByRole } from '@/services/auth';
 import { firebaseApp } from '@/services/firebase';
 
 function canAccessTeacherPages(role: string | null | undefined): boolean {
@@ -33,6 +33,22 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
         return;
       }
 
+      const stored = getStoredAuth();
+      if (stored?.user?.email === currentUser.email && stored.role) {
+        if (canAccessTeacherPages(stored.role)) {
+          setIsAuthorized(true);
+          setAccessError(null);
+          setIsChecking(false);
+          return;
+        }
+
+        setIsAuthorized(false);
+        setAccessError('Access denied: student accounts cannot access teacher pages.');
+        setIsChecking(false);
+        router.replace(redirectPathByRole(stored.role));
+        return;
+      }
+
       setIsChecking(true);
 
       void (async () => {
@@ -43,6 +59,16 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
           if (canAccessTeacherPages(role)) {
             setIsAuthorized(true);
             setAccessError(null);
+            localStorage.setItem('userRole', role);
+            localStorage.setItem(
+              'user',
+              JSON.stringify({
+                uid: currentUser.uid,
+                email: currentUser.email,
+                displayName: currentUser.displayName,
+                photoURL: currentUser.photoURL,
+              }),
+            );
             return;
           }
 
