@@ -15,41 +15,44 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
   const router = useRouter();
   const auth = useMemo(() => getAuth(firebaseApp), []);
 
-  const [isChecking, setIsChecking] = useState(true);
-  const [isAuthorized, setIsAuthorized] = useState(false);
-  const [accessError, setAccessError] = useState<string | null>(null);
+  const [isAuthorized, setIsAuthorized] = useState(true);
 
   useEffect(() => {
     let active = true;
+
+    const allowAccess = () => {
+      if (!active) return;
+      setIsAuthorized(true);
+    };
+
+    const blockAndRedirect = (target: string) => {
+      if (!active) return;
+      setIsAuthorized(false);
+      router.replace(target);
+    };
 
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (!active) return;
 
       if (!currentUser) {
         clearAuthState();
-        setIsAuthorized(false);
-        setIsChecking(false);
-        router.replace('/login');
+        blockAndRedirect('/login');
         return;
       }
 
       const stored = getStoredAuth();
       if (stored?.user?.email === currentUser.email && stored.role) {
         if (canAccessTeacherPages(stored.role)) {
-          setIsAuthorized(true);
-          setAccessError(null);
-          setIsChecking(false);
+          allowAccess();
           return;
         }
 
-        setIsAuthorized(false);
-        setAccessError('Access denied: student accounts cannot access teacher pages.');
-        setIsChecking(false);
-        router.replace(redirectPathByRole(stored.role));
+        blockAndRedirect(redirectPathByRole(stored.role));
         return;
       }
 
-      setIsChecking(true);
+      // Keep UI smooth with no blocking screen while role verification runs in background.
+      allowAccess();
 
       void (async () => {
         try {
@@ -57,8 +60,7 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
           if (!active) return;
 
           if (canAccessTeacherPages(role)) {
-            setIsAuthorized(true);
-            setAccessError(null);
+            allowAccess();
             localStorage.setItem('userRole', role);
             localStorage.setItem(
               'user',
@@ -72,20 +74,12 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
             return;
           }
 
-          setIsAuthorized(false);
-          setAccessError('Access denied: student accounts cannot access teacher pages.');
-          router.replace(redirectPathByRole(role));
-        } catch (err) {
+          blockAndRedirect(redirectPathByRole(role));
+        } catch {
           if (!active) return;
 
-          setIsAuthorized(false);
-          setAccessError(err instanceof Error ? err.message : 'Failed to verify account role.');
           clearAuthState();
-          router.replace('/login');
-        } finally {
-          if (active) {
-            setIsChecking(false);
-          }
+          blockAndRedirect('/login');
         }
       })();
     });
@@ -96,44 +90,8 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
     };
   }, [auth, router]);
 
-  if (isChecking) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: '2rem' }}>
-        <div style={{
-          border: '1px solid rgba(14, 165, 233, 0.28)',
-          background: 'rgba(240, 249, 255, 0.94)',
-          color: '#0369a1',
-          borderRadius: '12px',
-          padding: '0.75rem 0.95rem',
-          fontSize: '0.95rem',
-          fontWeight: 600,
-        }}>
-          Verifying teacher page access...
-        </div>
-      </div>
-    );
-  }
-
   if (!isAuthorized) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: '2rem' }}>
-        {accessError ? (
-          <div style={{
-            border: '1px solid rgba(244, 63, 94, 0.3)',
-            background: 'rgba(255, 241, 242, 0.92)',
-            color: '#be123c',
-            borderRadius: '12px',
-            padding: '0.75rem 0.95rem',
-            fontSize: '0.93rem',
-            fontWeight: 600,
-            maxWidth: '42rem',
-            textAlign: 'center',
-          }}>
-            {accessError}
-          </div>
-        ) : null}
-      </div>
-    );
+    return null;
   }
 
   return <>{children}</>;
