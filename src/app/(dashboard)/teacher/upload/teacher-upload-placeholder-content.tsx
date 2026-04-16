@@ -20,7 +20,7 @@ export function TeacherUploadPlaceholderContent() {
   const sidebarRef = useRef<HTMLElement | null>(null);
   const auth = useMemo(() => getAuth(firebaseApp), []);
 
-  const [user, setUser] = useState<TeacherUser | null>(null);
+  const [user, setUser] = useState<TeacherUser | null>(() => auth.currentUser);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
@@ -82,17 +82,7 @@ export function TeacherUploadPlaceholderContent() {
   };
 
   if (!user) {
-    return (
-      <div className="dashboard-container upload-page">
-        <main className="main-content">
-          <div className="content-area">
-            <section className="upload-workbench-shell">
-              <div className="workbench-alert workbench-alert-loading">Loading your account...</div>
-            </section>
-          </div>
-        </main>
-      </div>
-    );
+    return null;
   }
 
   return (
