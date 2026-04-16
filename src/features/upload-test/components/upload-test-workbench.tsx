@@ -454,6 +454,7 @@ export function UploadTestWorkbench() {
   const answerKeyCount = useMemo(() => Object.keys(answerKeyPreview).length, [answerKeyPreview]);
   const isSubmitDisabled = submitStatus === 'loading';
   const canExtractQuestions = draft.skill === 'reading' || draft.skill === 'listening';
+  const isWritingMode = draft.skill === 'writing';
 
   function applyAssignmentMode(nextMode: Exclude<AssignmentMode, null>) {
     if (nextMode === 'all') {
@@ -1206,14 +1207,13 @@ export function UploadTestWorkbench() {
                 </span>
                 <span>{extraction.status === 'loading' ? 'Analyzing...' : 'Extract Questions'}</span>
               </button>
-            ) : (
+            ) : isWritingMode ? (
               <span className="workbench-pill">Writing mode: extraction is disabled.</span>
-            )}
+            ) : null}
 
             <div className="workbench-submit-group">
               <button
                 type="button"
-                className="workbench-btn workbench-btn-solid"
                 onClick={handleSubmit}
                 disabled={isSubmitDisabled}
               >
@@ -1254,13 +1254,15 @@ export function UploadTestWorkbench() {
           </div>
 
           <p className="workbench-helper-note">
-            {canExtractQuestions
-              ? 'Page range is automatic: all pages.'
-              : isValidWritingRule(draft.writingRule)
-                ? draft.writingRule === 'overtime'
-                  ? 'Writing mode: students may exceed 60 minutes, but submission requires minimum word count.'
-                  : 'Writing mode: 60-minute timer with auto-submit at timeout, regardless of word count.'
-                : 'Writing mode: choose a submission rule, upload Task 1 and Task 2 materials, then submit.'}
+            {!draft.skill
+              ? 'Choose a skill to begin configuring extraction and submission rules.'
+              : canExtractQuestions
+                ? 'Page range is automatic: all pages.'
+                : isValidWritingRule(draft.writingRule)
+                  ? draft.writingRule === 'overtime'
+                    ? 'Writing mode: students may exceed 60 minutes, but submission requires minimum word count.'
+                    : 'Writing mode: 60-minute timer with auto-submit at timeout, regardless of word count.'
+                  : 'Writing mode: choose a submission rule, upload Task 1 and Task 2 materials, then submit.'}
           </p>
         </div>
       </div>
