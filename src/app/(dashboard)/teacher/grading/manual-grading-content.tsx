@@ -388,6 +388,24 @@ export function ManualGradingContent() {
     }
   };
 
+  const hasDeepLinkContext = Boolean(openMode === 'grade' || filterStudent || filterTestId || filterTest);
+
+  const handleRefreshClick = async () => {
+    if (isSubmitting) return;
+
+    if (hasDeepLinkContext) {
+      // Prevent query auto-open from re-triggering while we reset back to base grading route.
+      autoOpenFromQueryRef.current = true;
+      setSelected(null);
+      setSearchText('');
+      setSelectedClass('all');
+      setSelectedTest('all');
+      router.replace('/teacher/grading');
+    }
+
+    await loadSubmissions(true);
+  };
+
   return (
     <div className="dashboard-container manual-grading-page">
       <div className="left-edge-zone" onMouseEnter={() => setSidebarOpen(true)} />
@@ -462,7 +480,7 @@ export function ManualGradingContent() {
                 <p className="card-subtitle">Grade writing submissions that require human evaluation</p>
                 <p className="pending-counter">Pending now: <strong>{pendingRows.length}</strong></p>
               </div>
-              <button type="button" className="refresh-btn" onClick={() => loadSubmissions(true)} disabled={isRefreshing || isLoading}>
+              <button type="button" className="refresh-btn" onClick={handleRefreshClick} disabled={isRefreshing || isLoading || isSubmitting}>
                 <i className="fas fa-sync-alt" /> {isRefreshing ? 'Refreshing...' : 'Refresh'}
               </button>
             </div>
