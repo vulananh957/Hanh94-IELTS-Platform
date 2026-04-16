@@ -123,6 +123,44 @@
   background: rgba(17, 24, 39, 0.16);
 }
 
+.modal-inline-feedback {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  border-radius: 10px;
+  padding: 0.72rem 0.82rem;
+  margin: 0 0 1rem;
+  border: 1px solid transparent;
+}
+
+.modal-inline-feedback i {
+  margin-top: 0.1rem;
+}
+
+.modal-inline-feedback span {
+  flex: 1;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.modal-inline-feedback.info {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.24);
+  color: #1d4ed8;
+}
+
+.modal-inline-feedback.success {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.24);
+  color: #047857;
+}
+
+.modal-inline-feedback.error {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.24);
+  color: #b91c1c;
+}
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));

@@ -20,6 +20,7 @@ import '../teacher-dashboard.css';
 import './manage-users.css';
 
 type TabKey = 'classes' | 'students' | 'teachers' | 'testCreators';
+type ModalFeedback = { type: 'success' | 'error' | 'info'; message: string };
 
 export function ManageUsersContent() {
   const router = useRouter();
@@ -53,12 +54,15 @@ export function ManageUsersContent() {
   const [addUserRole, setAddUserRole] = useState<ManageUserRole>('student');
   const [addUserClassCode, setAddUserClassCode] = useState('');
   const [isAddingUser, setIsAddingUser] = useState(false);
+  const [addUserFeedback, setAddUserFeedback] = useState<ModalFeedback | null>(null);
   const [newClassName, setNewClassName] = useState('');
   const [newClassDescription, setNewClassDescription] = useState('');
   const [isCreatingClass, setIsCreatingClass] = useState(false);
+  const [createClassFeedback, setCreateClassFeedback] = useState<ModalFeedback | null>(null);
   const [bulkImportClassCode, setBulkImportClassCode] = useState('');
   const [bulkImportText, setBulkImportText] = useState('');
   const [isBulkImporting, setIsBulkImporting] = useState(false);
+  const [bulkImportFeedback, setBulkImportFeedback] = useState<ModalFeedback | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
@@ -344,6 +348,24 @@ export function ManageUsersContent() {
     }
   };
 
+  const closeAddUserModal = () => {
+    if (isAddingUser) return;
+    setShowAddUserModal(false);
+    setAddUserFeedback(null);
+  };
+
+  const closeCreateClassModal = () => {
+    if (isCreatingClass) return;
+    setShowCreateClassModal(false);
+    setCreateClassFeedback(null);
+  };
+
+  const closeBulkImportModal = () => {
+    if (isBulkImporting) return;
+    setShowBulkImportModal(false);
+    setBulkImportFeedback(null);
+  };
+
   const openAddUserModal = (presetRole?: ManageUserRole) => {
     const roleFromTab: ManageUserRole = activeTab === 'teachers'
       ? 'teacher'
@@ -354,18 +376,21 @@ export function ManageUsersContent() {
     setAddUserEmail('');
     setAddUserRole(presetRole || roleFromTab);
     setAddUserClassCode('');
+    setAddUserFeedback(null);
     setShowAddUserModal(true);
   };
 
   const openCreateClassModal = () => {
     setNewClassName('');
     setNewClassDescription('');
+    setCreateClassFeedback(null);
     setShowCreateClassModal(true);
   };
 
   const openBulkImportModal = () => {
     setBulkImportClassCode('');
     setBulkImportText('');
+    setBulkImportFeedback(null);
     setShowBulkImportModal(true);
   };
 
@@ -374,25 +399,25 @@ export function ManageUsersContent() {
 
     const email = addUserEmail.trim();
     const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    setAddUserFeedback(null);
 
     if (!email) {
-      showActionFeedback('error', 'Please enter an email address.');
+      setAddUserFeedback({ type: 'error', message: 'Please enter an email address.' });
       return;
     }
 
     if (!emailPattern.test(email)) {
-      showActionFeedback('error', 'Please provide a valid email address.');
+      setAddUserFeedback({ type: 'error', message: 'Please provide a valid email address.' });
       return;
     }
 
     if (addUserRole === 'student' && !addUserClassCode) {
-      showActionFeedback('error', 'Please assign a class for student accounts.');
+      setAddUserFeedback({ type: 'error', message: 'Please assign a class for student accounts.' });
       return;
     }
 
     try {
       setIsAddingUser(true);
-      setError(null);
 
       const result = await addManageUser({
         email,
@@ -404,15 +429,17 @@ export function ManageUsersContent() {
         throw new Error(result.error || result.message || 'Failed to add user.');
       }
 
-      setShowAddUserModal(false);
-      const refreshed = await loadData({ showLoading: true, forceFresh: true });
+      const refreshed = await loadData({ showLoading: false, forceFresh: true });
       if (refreshed) {
-        showActionFeedback('success', `${email} was added successfully as ${addUserRole}.`);
+        setAddUserEmail('');
+        setAddUserClassCode('');
+        setAddUserFeedback({ type: 'success', message: `${email} was added successfully as ${addUserRole}.` });
+      } else {
+        setAddUserFeedback({ type: 'success', message: `${email} was added. Please refresh if list is not updated yet.` });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to add user.';
-      setError(message);
-      showActionFeedback('error', message);
+      setAddUserFeedback({ type: 'error', message });
     } finally {
       setIsAddingUser(false);
     }
@@ -423,15 +450,15 @@ export function ManageUsersContent() {
 
     const name = newClassName.trim();
     const description = newClassDescription.trim();
+    setCreateClassFeedback(null);
 
     if (!name) {
-      showActionFeedback('error', 'Please enter a class name.');
+      setCreateClassFeedback({ type: 'error', message: 'Please enter a class name.' });
       return;
     }
 
     try {
       setIsCreatingClass(true);
-      setError(null);
 
       const result = await createManageClass({ name, description });
       if (!result.success) {
@@ -439,20 +466,27 @@ export function ManageUsersContent() {
       }
 
       const generatedCode = String(result.classCode || result.code || '').trim();
-      setShowCreateClassModal(false);
-      const refreshed = await loadData({ showLoading: true, forceFresh: true });
+      const refreshed = await loadData({ showLoading: false, forceFresh: true });
       if (refreshed) {
-        showActionFeedback(
-          'success',
-          generatedCode
+        setNewClassName('');
+        setNewClassDescription('');
+        setCreateClassFeedback({
+          type: 'success',
+          message: generatedCode
             ? `Class "${name}" created successfully (code: ${generatedCode}).`
             : `Class "${name}" created successfully.`,
-        );
+        });
+      } else {
+        setCreateClassFeedback({
+          type: 'success',
+          message: generatedCode
+            ? `Class "${name}" created (code: ${generatedCode}). Please refresh if list is not updated yet.`
+            : `Class "${name}" created. Please refresh if list is not updated yet.`,
+        });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create class.';
-      setError(message);
-      showActionFeedback('error', message);
+      setCreateClassFeedback({ type: 'error', message });
     } finally {
       setIsCreatingClass(false);
     }
@@ -462,8 +496,9 @@ export function ManageUsersContent() {
     if (isBulkImporting) return;
 
     const classCode = bulkImportClassCode.trim();
+    setBulkImportFeedback(null);
     if (!classCode) {
-      showActionFeedback('error', 'Please select a destination class.');
+      setBulkImportFeedback({ type: 'error', message: 'Please select a destination class.' });
       return;
     }
 
@@ -473,7 +508,7 @@ export function ManageUsersContent() {
       .filter(Boolean);
 
     if (rawLines.length === 0) {
-      showActionFeedback('error', 'Please enter at least one student email.');
+      setBulkImportFeedback({ type: 'error', message: 'Please enter at least one student email.' });
       return;
     }
 
@@ -482,13 +517,12 @@ export function ManageUsersContent() {
     const invalidEmails = deduped.filter((email) => !emailPattern.test(email));
 
     if (invalidEmails.length > 0) {
-      showActionFeedback('error', `Invalid email format: ${invalidEmails[0]}`);
+      setBulkImportFeedback({ type: 'error', message: `Invalid email format: ${invalidEmails[0]}` });
       return;
     }
 
     try {
       setIsBulkImporting(true);
-      setError(null);
 
       const result = await bulkImportStudents({
         classCode,
@@ -499,18 +533,19 @@ export function ManageUsersContent() {
         throw new Error(result.error || result.message || 'Failed to import students.');
       }
 
-      setShowBulkImportModal(false);
       setActiveTab('students');
+      setBulkImportText('');
 
-      const refreshed = await loadData({ showLoading: true, forceFresh: true });
+      const refreshed = await loadData({ showLoading: false, forceFresh: true });
       if (refreshed) {
         const importedCount = result.addedCount ?? deduped.length;
-        showActionFeedback('success', `Imported ${importedCount} student account(s) successfully.`);
+        setBulkImportFeedback({ type: 'success', message: `Imported ${importedCount} student account(s) successfully.` });
+      } else {
+        setBulkImportFeedback({ type: 'success', message: 'Import completed. Please refresh if list is not updated yet.' });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to import students.';
-      setError(message);
-      showActionFeedback('error', message);
+      setBulkImportFeedback({ type: 'error', message });
     } finally {
       setIsBulkImporting(false);
     }
@@ -1174,12 +1209,26 @@ export function ManageUsersContent() {
           <div className="manage-modal-content action-modal">
             <div className="manage-modal-header">
               <h3>Add New User</h3>
-              <button type="button" className="manage-modal-close" onClick={() => setShowAddUserModal(false)} disabled={isAddingUser}>
+              <button type="button" className="manage-modal-close" onClick={closeAddUserModal} disabled={isAddingUser}>
                 <i className="fas fa-times" />
               </button>
             </div>
 
             <div className="manage-modal-body">
+              {isAddingUser ? (
+                <div className="modal-inline-feedback info" role="status">
+                  <i className="fas fa-spinner fa-spin" />
+                  <span>Adding user... Please wait.</span>
+                </div>
+              ) : null}
+
+              {addUserFeedback ? (
+                <div className={`modal-inline-feedback ${addUserFeedback.type}`} role="status">
+                  <i className={`fas ${addUserFeedback.type === 'success' ? 'fa-check-circle' : 'fa-exclamation-triangle'}`} />
+                  <span>{addUserFeedback.message}</span>
+                </div>
+              ) : null}
+
               <div className="edit-form-group">
                 <label className="form-label">Email Address</label>
                 <input
@@ -1235,7 +1284,7 @@ export function ManageUsersContent() {
             </div>
 
             <div className="manage-modal-footer">
-              <button className="action-btn secondary" type="button" onClick={() => setShowAddUserModal(false)} disabled={isAddingUser}>
+              <button className="action-btn secondary" type="button" onClick={closeAddUserModal} disabled={isAddingUser}>
                 Cancel
               </button>
               <button className="action-btn" type="button" onClick={() => void handleAddUserSubmit()} disabled={isAddingUser}>
@@ -1251,12 +1300,26 @@ export function ManageUsersContent() {
           <div className="manage-modal-content action-modal">
             <div className="manage-modal-header">
               <h3>Create New Class</h3>
-              <button type="button" className="manage-modal-close" onClick={() => setShowCreateClassModal(false)} disabled={isCreatingClass}>
+              <button type="button" className="manage-modal-close" onClick={closeCreateClassModal} disabled={isCreatingClass}>
                 <i className="fas fa-times" />
               </button>
             </div>
 
             <div className="manage-modal-body">
+              {isCreatingClass ? (
+                <div className="modal-inline-feedback info" role="status">
+                  <i className="fas fa-spinner fa-spin" />
+                  <span>Creating class... Please wait.</span>
+                </div>
+              ) : null}
+
+              {createClassFeedback ? (
+                <div className={`modal-inline-feedback ${createClassFeedback.type}`} role="status">
+                  <i className={`fas ${createClassFeedback.type === 'success' ? 'fa-check-circle' : 'fa-exclamation-triangle'}`} />
+                  <span>{createClassFeedback.message}</span>
+                </div>
+              ) : null}
+
               <div className="edit-form-group">
                 <label className="form-label">Class Name</label>
                 <input
@@ -1283,7 +1346,7 @@ export function ManageUsersContent() {
             </div>
 
             <div className="manage-modal-footer">
-              <button className="action-btn secondary" type="button" onClick={() => setShowCreateClassModal(false)} disabled={isCreatingClass}>
+              <button className="action-btn secondary" type="button" onClick={closeCreateClassModal} disabled={isCreatingClass}>
                 Cancel
               </button>
               <button className="action-btn" type="button" onClick={() => void handleCreateClassSubmit()} disabled={isCreatingClass}>
@@ -1299,12 +1362,26 @@ export function ManageUsersContent() {
           <div className="manage-modal-content bulk-import-modal">
             <div className="manage-modal-header">
               <h3>Bulk Import Students</h3>
-              <button type="button" className="manage-modal-close" onClick={() => setShowBulkImportModal(false)} disabled={isBulkImporting}>
+              <button type="button" className="manage-modal-close" onClick={closeBulkImportModal} disabled={isBulkImporting}>
                 <i className="fas fa-times" />
               </button>
             </div>
 
             <div className="manage-modal-body">
+              {isBulkImporting ? (
+                <div className="modal-inline-feedback info" role="status">
+                  <i className="fas fa-spinner fa-spin" />
+                  <span>Importing students... Please wait.</span>
+                </div>
+              ) : null}
+
+              {bulkImportFeedback ? (
+                <div className={`modal-inline-feedback ${bulkImportFeedback.type}`} role="status">
+                  <i className={`fas ${bulkImportFeedback.type === 'success' ? 'fa-check-circle' : 'fa-exclamation-triangle'}`} />
+                  <span>{bulkImportFeedback.message}</span>
+                </div>
+              ) : null}
+
               <div className="edit-form-group">
                 <label className="form-label">Assign to Class</label>
                 <select
@@ -1339,7 +1416,7 @@ export function ManageUsersContent() {
             </div>
 
             <div className="manage-modal-footer">
-              <button className="action-btn secondary" type="button" onClick={() => setShowBulkImportModal(false)} disabled={isBulkImporting}>
+              <button className="action-btn secondary" type="button" onClick={closeBulkImportModal} disabled={isBulkImporting}>
                 Cancel
               </button>
               <button className="action-btn" type="button" onClick={() => void handleBulkImportSubmit()} disabled={isBulkImporting}>
