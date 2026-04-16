@@ -1214,10 +1214,31 @@ export function UploadTestWorkbench() {
             <div className="workbench-submit-group">
               <button
                 type="button"
+                className="workbench-btn workbench-btn-solid workbench-btn-submit"
                 onClick={handleSubmit}
                 disabled={isSubmitDisabled}
               >
-                {submitStatus === 'loading' ? 'Submitting...' : 'Submit Test'}
+                <span className={`workbench-submit-icon ${submitStatus === 'loading' ? 'is-loading' : ''}`} aria-hidden="true">
+                  <svg viewBox="0 0 24 24" className="workbench-submit-icon-svg">
+                    <path
+                      d="M3.2 11.7 20.5 4.5l-5.8 15.1-3.2-5.2-5.2-2.7Z"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.7"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="m20.4 4.6-8.9 9.8"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.7"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </span>
+                <span className="workbench-submit-label">{submitStatus === 'loading' ? 'Submitting...' : 'Submit Test'}</span>
               </button>
             </div>
           </div>

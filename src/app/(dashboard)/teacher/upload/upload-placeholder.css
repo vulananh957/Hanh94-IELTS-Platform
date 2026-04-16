@@ -850,6 +850,78 @@
   background: linear-gradient(135deg, #0d6460, #298666);
 }
 
+.workbench-btn-submit {
+  position: relative;
+  overflow: hidden;
+  min-width: 9.85rem;
+  border-color: rgba(6, 95, 86, 0.75);
+  background: linear-gradient(135deg, #0f766e 0%, #168f80 45%, #34caa0 100%);
+  box-shadow: 0 12px 24px rgba(15, 118, 110, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  text-shadow: 0 1px 1px rgba(6, 78, 59, 0.35);
+}
+
+.workbench-btn-submit::after {
+  content: '';
+  position: absolute;
+  top: -160%;
+  left: -62%;
+  width: 42%;
+  height: 360%;
+  background: linear-gradient(115deg, transparent 0%, rgba(255, 255, 255, 0.34) 52%, transparent 100%);
+  transform: rotate(24deg);
+  transition: left 0.42s ease;
+}
+
+.workbench-btn-submit:hover:not(:disabled) {
+  transform: translateY(-2px);
+  background: linear-gradient(135deg, #0d6862 0%, #137c71 45%, #2fb38f 100%);
+  box-shadow: 0 16px 28px rgba(15, 118, 110, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.workbench-btn-submit:hover:not(:disabled)::after {
+  left: 122%;
+}
+
+.workbench-btn-submit:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 8px 16px rgba(15, 118, 110, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.workbench-btn-submit:disabled {
+  opacity: 0.78;
+  border-color: rgba(13, 100, 96, 0.34);
+  box-shadow: 0 8px 16px rgba(15, 118, 110, 0.18);
+}
+
+.workbench-submit-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.workbench-submit-icon-svg {
+  width: 1.04rem;
+  height: 1.04rem;
+}
+
+.workbench-submit-icon.is-loading .workbench-submit-icon-svg {
+  animation: workbenchSubmitSpin 0.92s linear infinite;
+}
+
+.workbench-submit-label {
+  white-space: nowrap;
+}
+
+@keyframes workbenchSubmitSpin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .workbench-pill-row {
   margin-top: 0.68rem;
   display: flex;
