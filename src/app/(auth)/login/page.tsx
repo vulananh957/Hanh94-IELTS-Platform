@@ -10,6 +10,7 @@ import {
   handleGoogleSignIn,
   processAuthenticatedUser,
   redirectPathByRole,
+  waitForAuthSession,
   type MessageType,
 } from '@/services/auth';
 
@@ -43,6 +44,7 @@ export default function LoginPage() {
     try {
       const user = await handleGoogleSignIn();
       const role = await processAuthenticatedUser(user);
+      await waitForAuthSession(10000);
       redirectByRole(role);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Login failed. Please try again.';
@@ -73,6 +75,7 @@ export default function LoginPage() {
       .then(async (user) => {
         if (!user) return;
         const role = await processAuthenticatedUser(user);
+        await waitForAuthSession(10000);
         redirectByRole(role);
       })
       .catch(() => {

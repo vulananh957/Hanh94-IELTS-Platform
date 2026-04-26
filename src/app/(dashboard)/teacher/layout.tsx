@@ -4,7 +4,13 @@ import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { clearAuthState, getStoredAuth, getUserRole, redirectPathByRole } from '@/services/auth';
+import {
+  clearAuthState,
+  getRedirectResultIfAny,
+  getStoredAuth,
+  getUserRole,
+  redirectPathByRole,
+} from '@/services/auth';
 import { firebaseApp } from '@/services/firebase';
 
 function canAccessTeacherPages(role: string | null | undefined): boolean {
@@ -19,13 +25,35 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
 
   useEffect(() => {
     let active = true;
-    let signedOutGraceTimer: ReturnType<typeof setTimeout> | null = null;
+    let recoveryAttemptId = 0;
 
-    const clearSignedOutGraceTimer = () => {
-      if (signedOutGraceTimer) {
-        clearTimeout(signedOutGraceTimer);
-        signedOutGraceTimer = null;
+    const waitForAuthRecovery = async (timeoutMs: number): Promise<boolean> => {
+      if (auth.currentUser) return true;
+
+      try {
+        // In redirect flow, this finalizes pending auth result if available.
+        await getRedirectResultIfAny();
+      } catch {
+        // Ignore recovery errors and keep waiting for auth state.
       }
+
+      if (auth.currentUser) return true;
+
+      return await new Promise<boolean>((resolve) => {
+        const startedAt = Date.now();
+        const pollInterval = setInterval(() => {
+          if (auth.currentUser) {
+            clearInterval(pollInterval);
+            resolve(true);
+            return;
+          }
+
+          if (Date.now() - startedAt >= timeoutMs) {
+            clearInterval(pollInterval);
+            resolve(false);
+          }
+        }, 250);
+      });
     };
 
     const allowAccess = () => {
@@ -41,7 +69,6 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
 
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (!active) return;
-      clearSignedOutGraceTimer();
 
       if (!currentUser) {
         const stored = getStoredAuth();
@@ -49,12 +76,16 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
         if (stored?.user) {
           allowAccess();
 
-          signedOutGraceTimer = setTimeout(() => {
+          const thisAttemptId = ++recoveryAttemptId;
+          void (async () => {
+            const recovered = await waitForAuthRecovery(12000);
             if (!active) return;
-            if (auth.currentUser) return;
+            if (thisAttemptId !== recoveryAttemptId) return;
+            if (recovered) return;
+
             clearAuthState();
             blockAndRedirect('/login');
-          }, 2500);
+          })();
           return;
         }
 
@@ -62,6 +93,9 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
         blockAndRedirect('/login');
         return;
       }
+
+      // Cancel any pending null-user recovery flow once a real user appears.
+      recoveryAttemptId += 1;
 
       const stored = getStoredAuth();
       if (stored?.user?.email === currentUser.email && stored.role) {
@@ -109,7 +143,7 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
 
     return () => {
       active = false;
-      clearSignedOutGraceTimer();
+      recoveryAttemptId += 1;
       unsubscribe();
     };
   }, [auth, router]);

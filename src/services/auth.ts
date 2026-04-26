@@ -260,3 +260,22 @@ export function onAuthStateChangedCleanup(onSignedOut: () => void) {
 		}
 	});
 }
+
+export async function waitForAuthSession(timeoutMs = 8000): Promise<boolean> {
+	if (auth.currentUser) return true;
+
+	return await new Promise<boolean>((resolve) => {
+		const unsubscribe = onAuthStateChanged(auth, (user) => {
+			if (user) {
+				window.clearTimeout(timeoutId);
+				unsubscribe();
+				resolve(true);
+			}
+		});
+
+		const timeoutId = window.setTimeout(() => {
+			unsubscribe();
+			resolve(Boolean(auth.currentUser));
+		}, timeoutMs);
+	});
+}
