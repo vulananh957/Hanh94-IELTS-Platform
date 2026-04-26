@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import { firebaseApp } from '@/services/firebase';
+import { clearAuthState } from '@/services/auth';
 import { useFileInputWithDragDrop } from '@/features/upload-test/hooks/use-file-input-with-drag-drop';
 import {
   getManualGradingSubmissions,
@@ -113,7 +114,7 @@ export function ManualGradingContent() {
     if (!auth) return;
     const unsub = onAuthStateChanged(auth, (currentUser) => {
       if (!currentUser) {
-        router.push('/login');
+        setUser(null);
         return;
       }
       setUser(currentUser);
@@ -381,9 +382,10 @@ export function ManualGradingContent() {
 
     try {
       await signOut(auth);
-      localStorage.clear();
+      clearAuthState();
       router.push('/login');
     } catch {
+      clearAuthState();
       router.push('/login');
     }
   };

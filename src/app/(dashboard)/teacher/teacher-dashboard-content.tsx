@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, getFirestore, onSnapshot } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
+import { clearAuthState } from '@/services/auth';
 import { calculateDashboardStats, getRecentActivity, invalidateDashboardDataCache, type ActivityRecord, type DashboardStats } from '@/services/dashboard';
 import './teacher-dashboard.css';
 
@@ -39,7 +40,7 @@ export function TeacherDashboardContent() {
     
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (!currentUser) {
-        router.push('/login');
+        setUser(null);
         return;
       }
       setUser(currentUser);
@@ -159,10 +160,11 @@ export function TeacherDashboardContent() {
     if (!confirm('Are you sure you want to logout?')) return;
     try {
       await signOut(auth);
-      localStorage.clear();
+      clearAuthState();
       router.push('/login');
     } catch (err) {
       console.error('Logout error:', err);
+      clearAuthState();
       router.push('/login');
     }
   };

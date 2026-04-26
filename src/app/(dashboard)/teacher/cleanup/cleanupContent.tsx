@@ -15,6 +15,7 @@ import {
   type QueryDocumentSnapshot,
 } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
+import { clearAuthState } from '@/services/auth';
 import '../teacher-dashboard.css';
 import './cleanup.css';
 
@@ -160,7 +161,7 @@ export function CleanupContent() {
 
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (!currentUser) {
-        router.push('/login');
+        setUser(null);
         return;
       }
       setUser(currentUser);
@@ -373,9 +374,10 @@ export function CleanupContent() {
 
     try {
       await signOut(auth);
-      localStorage.clear();
+      clearAuthState();
       router.push('/login');
     } catch {
+      clearAuthState();
       router.push('/login');
     }
   };

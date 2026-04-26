@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
 import { deleteDoc, doc, getFirestore, updateDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
+import { clearAuthState } from '@/services/auth';
 import {
   addManageUser,
   bulkImportStudents,
@@ -84,7 +85,7 @@ export function ManageUsersContent() {
     if (!auth) return;
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (!currentUser) {
-        router.push('/login');
+        setUser(null);
         return;
       }
       setUser(currentUser);
@@ -782,10 +783,11 @@ export function ManageUsersContent() {
     if (!confirm('Are you sure you want to logout?')) return;
     try {
       await signOut(auth);
-      localStorage.clear();
+      clearAuthState();
       router.push('/login');
     } catch (err) {
       console.error(err);
+      clearAuthState();
       router.push('/login');
     }
   };

@@ -8,7 +8,6 @@ import {
   getRedirectResultIfAny,
   getStoredAuth,
   handleGoogleSignIn,
-  onAuthStateChangedCleanup,
   processAuthenticatedUser,
   redirectPathByRole,
   type MessageType,
@@ -83,10 +82,6 @@ export default function LoginPage() {
         setIsSubmitting(false);
       });
 
-    const unsubscribe = onAuthStateChangedCleanup(() => {
-      clearAuthState();
-    });
-
     const onMouseMove = (e: MouseEvent) => {
       const card = cardRef.current;
       if (!card) return;
@@ -110,7 +105,6 @@ export default function LoginPage() {
     return () => {
       document.removeEventListener('mousemove', onMouseMove);
       cardRef.current?.removeEventListener('mouseleave', onMouseLeave);
-      unsubscribe();
     };
   }, [redirectByRole, router, showToast]);
 

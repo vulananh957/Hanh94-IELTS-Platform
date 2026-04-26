@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
 import { firebaseApp } from '@/services/firebase';
+import { clearAuthState } from '@/services/auth';
 import { UploadTestWorkbench } from '../../../../features/upload-test/components/upload-test-workbench';
 import '../teacher-dashboard.css';
 import './upload-placeholder.css';
@@ -29,7 +30,6 @@ export function TeacherUploadPlaceholderContent() {
     const unsub = onAuthStateChanged(auth, (currentUser) => {
       if (!currentUser) {
         setUser(null);
-        router.replace('/login');
         return;
       }
 
@@ -74,9 +74,10 @@ export function TeacherUploadPlaceholderContent() {
 
     try {
       await signOut(auth);
-      localStorage.clear();
+      clearAuthState();
       router.push('/login');
     } catch {
+      clearAuthState();
       router.push('/login');
     }
   };

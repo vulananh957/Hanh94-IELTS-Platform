@@ -19,6 +19,14 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
 
   useEffect(() => {
     let active = true;
+    let signedOutGraceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const clearSignedOutGraceTimer = () => {
+      if (signedOutGraceTimer) {
+        clearTimeout(signedOutGraceTimer);
+        signedOutGraceTimer = null;
+      }
+    };
 
     const allowAccess = () => {
       if (!active) return;
@@ -33,8 +41,23 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
 
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (!active) return;
+      clearSignedOutGraceTimer();
 
       if (!currentUser) {
+        const stored = getStoredAuth();
+
+        if (stored?.user) {
+          allowAccess();
+
+          signedOutGraceTimer = setTimeout(() => {
+            if (!active) return;
+            if (auth.currentUser) return;
+            clearAuthState();
+            blockAndRedirect('/login');
+          }, 2500);
+          return;
+        }
+
         clearAuthState();
         blockAndRedirect('/login');
         return;
@@ -86,6 +109,7 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
 
     return () => {
       active = false;
+      clearSignedOutGraceTimer();
       unsubscribe();
     };
   }, [auth, router]);
