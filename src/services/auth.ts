@@ -181,6 +181,27 @@ function normalizeRole(value: unknown): UserRole | null {
 	return null;
 }
 
+async function getRoleFromTokenClaims(user: User): Promise<UserRole | null> {
+	try {
+		const tokenResult = await user.getIdTokenResult();
+		return normalizeRole(tokenResult.claims.role ?? tokenResult.claims.userRole);
+	} catch {
+		return null;
+	}
+}
+
+function getStoredRoleForUser(user: User): UserRole | null {
+	const stored = getStoredAuth();
+	if (
+		stored
+		&& stored.user?.email?.toLowerCase() === user.email?.toLowerCase()
+		&& stored.role
+	) {
+		return stored.role;
+	}
+	return null;
+}
+
 export function getStoredAuth(): StoredAuth | null {
 	const userRaw = localStorage.getItem('user');
 	const roleRaw = localStorage.getItem('userRole');
@@ -264,10 +285,18 @@ export async function handleGoogleSignIn(): Promise<User> {
 	}
 }
 
-export async function getUserRole(user: User): Promise<UserRole> {
-	const timeout = withTimeoutSignal(10000);
+export async function getUserRole(
+	user: User,
+	options: { idTokenPromise?: Promise<string> } = {},
+): Promise<UserRole> {
+	const claimRole = await getRoleFromTokenClaims(user);
+	if (claimRole) {
+		return claimRole;
+	}
+
+	const timeout = withTimeoutSignal(8000);
 	try {
-		const idToken = await user.getIdToken();
+		const idToken = await (options.idTokenPromise ?? user.getIdToken());
 		const response = await fetch(GET_USER_ROLE_URL, {
 			method: 'POST',
 			headers: {
@@ -291,23 +320,9 @@ export async function getUserRole(user: User): Promise<UserRole> {
 
 		return normalizedRole;
 	} catch {
-		try {
-			const tokenResult = await user.getIdTokenResult();
-			const claimRole = normalizeRole(tokenResult.claims.role ?? tokenResult.claims.userRole);
-			if (claimRole) {
-				return claimRole;
-			}
-		} catch {
-			// Ignore token-claim fallback errors and continue with stored-role fallback.
-		}
-
-		const stored = getStoredAuth();
-		if (
-			stored
-			&& stored.user?.email?.toLowerCase() === user.email?.toLowerCase()
-			&& stored.role
-		) {
-			return stored.role;
+		const storedRole = getStoredRoleForUser(user);
+		if (storedRole) {
+			return storedRole;
 		}
 		throw new Error('Access denied. You are not authorized to use this system. Please contact administrator.');
 	} finally {
@@ -351,21 +366,18 @@ async function saveUserInfoWithToken(params: {
 }
 
 export async function processAuthenticatedUser(user: User): Promise<UserRole> {
-	// Run parallel to reduce end-to-end login latency.
-	const [role, idToken] = await Promise.all([getUserRole(user), user.getIdToken()]);
+	const idTokenPromise = user.getIdToken();
+	const role = await getUserRole(user, { idTokenPromise });
 
 	persistAuthState(user, role);
 
-	if (role === 'teacher' || role === 'student' || role === 'testCreator') {
-		try {
-			await saveUserInfoWithToken({ user, idToken, classCode: null });
-		} catch {
-			// Do not block login flow when profile sync endpoint is temporarily unavailable.
-		}
-		return role;
-	}
+	void idTokenPromise
+		.then((idToken) => saveUserInfoWithToken({ user, idToken, classCode: null }))
+		.catch(() => {
+			// Keep profile sync best-effort without slowing down redirect after login.
+		});
 
-	throw new Error('Access denied. You are not authorized to use this system. Please contact administrator.');
+	return role;
 }
 
 export function redirectPathByRole(role: UserRole): string {

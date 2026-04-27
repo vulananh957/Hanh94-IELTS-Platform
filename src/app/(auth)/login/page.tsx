@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getRedirectResultIfAny,
   getStoredAuth,
@@ -11,7 +11,6 @@ import {
   isAuthRedirectInProgressError,
   processAuthenticatedUser,
   redirectPathByRole,
-  waitForAuthSession,
   type MessageType,
 } from '@/services/auth';
 
@@ -45,7 +44,6 @@ export default function LoginPage() {
     try {
       const user = await handleGoogleSignIn();
       const role = await processAuthenticatedUser(user);
-      await waitForAuthSession(10000);
       redirectByRole(role);
     } catch (error) {
       if (isAuthRedirectInProgressError(error)) {
@@ -90,7 +88,6 @@ export default function LoginPage() {
 
         if (redirectUser) {
           const role = await processAuthenticatedUser(redirectUser);
-          await waitForAuthSession(10000);
           if (active) redirectByRole(role);
           return;
         }
@@ -139,10 +136,6 @@ export default function LoginPage() {
     };
   }, [redirectByRole, router, showToast]);
 
-  const buttonLabel = useMemo(() => {
-    return isSubmitting ? 'Signing in...' : 'Sign in with Google';
-  }, [isSubmitting]);
-
   return (
     <div className="login-page">
       <Link href="/" className="login-back-to-home">
@@ -169,7 +162,7 @@ export default function LoginPage() {
 
           <button className="login-signin-btn" onClick={signIn} disabled={isSubmitting}>
             <div className="login-google-icon" />
-            {buttonLabel}
+            {isSubmitting ? 'Signing in...' : 'Sign in with Google'}
           </button>
 
           <div className="login-divider">
