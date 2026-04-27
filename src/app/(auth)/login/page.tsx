@@ -100,7 +100,7 @@ export default function LoginPage() {
           redirectByRole(stored.role);
         }
       } catch {
-        if (active) {
+        if (active && hasPendingRedirect) {
           showToast('Login failed. Please try again.', 'error');
         }
       } finally {
