@@ -1,17 +1,19 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getAuth, onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged } from 'firebase/auth';
 import {
+  auth,
   clearAuthState,
   getRedirectResultIfAny,
   getStoredAuth,
   getUserRole,
+  hasPendingAuthRedirect,
   redirectPathByRole,
+  waitForAuthSession,
 } from '@/services/auth';
-import { firebaseApp } from '@/services/firebase';
 
 function canAccessTeacherPages(role: string | null | undefined): boolean {
   return role === 'teacher' || role === 'testCreator';
@@ -19,7 +21,6 @@ function canAccessTeacherPages(role: string | null | undefined): boolean {
 
 export default function TeacherRouteLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
-  const auth = useMemo(() => getAuth(firebaseApp), []);
 
   const [isAuthorized, setIsAuthorized] = useState(true);
 
@@ -31,29 +32,16 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
       if (auth.currentUser) return true;
 
       try {
-        // In redirect flow, this finalizes pending auth result if available.
-        await getRedirectResultIfAny();
+        const recoveredUser = await getRedirectResultIfAny({
+          waitForCurrentUser: true,
+          timeoutMs,
+        });
+        if (recoveredUser || auth.currentUser) return true;
       } catch {
         // Ignore recovery errors and keep waiting for auth state.
       }
 
-      if (auth.currentUser) return true;
-
-      return await new Promise<boolean>((resolve) => {
-        const startedAt = Date.now();
-        const pollInterval = setInterval(() => {
-          if (auth.currentUser) {
-            clearInterval(pollInterval);
-            resolve(true);
-            return;
-          }
-
-          if (Date.now() - startedAt >= timeoutMs) {
-            clearInterval(pollInterval);
-            resolve(false);
-          }
-        }, 250);
-      });
+      return await waitForAuthSession(timeoutMs);
     };
 
     const allowAccess = () => {
@@ -72,25 +60,29 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
 
       if (!currentUser) {
         const stored = getStoredAuth();
+        const shouldWaitForRedirect = hasPendingAuthRedirect();
 
         if (stored?.user) {
           allowAccess();
-
-          const thisAttemptId = ++recoveryAttemptId;
-          void (async () => {
-            const recovered = await waitForAuthRecovery(12000);
-            if (!active) return;
-            if (thisAttemptId !== recoveryAttemptId) return;
-            if (recovered) return;
-
-            clearAuthState();
-            blockAndRedirect('/login');
-          })();
-          return;
+        } else {
+          setIsAuthorized(false);
         }
 
-        clearAuthState();
-        blockAndRedirect('/login');
+        const thisAttemptId = ++recoveryAttemptId;
+        void (async () => {
+          const recovered = await waitForAuthRecovery(
+            shouldWaitForRedirect || stored?.user ? 12000 : 2500,
+          );
+          if (!active) return;
+          if (thisAttemptId !== recoveryAttemptId) return;
+          if (recovered) {
+            allowAccess();
+            return;
+          }
+
+          clearAuthState();
+          blockAndRedirect('/login');
+        })();
         return;
       }
 
@@ -146,7 +138,7 @@ export default function TeacherRouteLayout({ children }: { children: ReactNode }
       recoveryAttemptId += 1;
       unsubscribe();
     };
-  }, [auth, router]);
+  }, [router]);
 
   if (!isAuthorized) {
     return null;

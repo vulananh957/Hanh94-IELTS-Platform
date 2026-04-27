@@ -3,17 +3,36 @@ import {
 	browserLocalPersistence,
 	browserSessionPersistence,
 	GoogleAuthProvider,
+	indexedDBLocalPersistence,
 	getAuth,
 	getRedirectResult,
+	initializeAuth,
 	onAuthStateChanged,
 	setPersistence,
 	signInWithPopup,
 	signInWithRedirect,
+	type Auth,
 	type User,
 } from 'firebase/auth';
 import { firebaseApp } from './firebase';
 
-export const auth = getAuth(firebaseApp);
+const authPersistences = [
+	indexedDBLocalPersistence,
+	browserLocalPersistence,
+	browserSessionPersistence,
+];
+
+function initializeBrowserAuth(): Auth {
+	try {
+		return initializeAuth(firebaseApp, {
+			persistence: authPersistences,
+		});
+	} catch {
+		return getAuth(firebaseApp);
+	}
+}
+
+export const auth = initializeBrowserAuth();
 
 const GET_USER_ROLE_URL =
 	'https://us-central1-hanh94esl-71776.cloudfunctions.net/getUserRole';
@@ -40,19 +59,96 @@ provider.addScope('profile');
 provider.addScope('https://www.googleapis.com/auth/userinfo.profile');
 provider.setCustomParameters({ prompt: 'select_account' });
 
+const AUTH_REDIRECT_PENDING_KEY = 'hanh94esl:authRedirectPending';
+const AUTH_REDIRECT_STARTED_AT_KEY = 'hanh94esl:authRedirectStartedAt';
+const AUTH_REDIRECT_PENDING_TTL_MS = 10 * 60 * 1000;
+const AUTH_REDIRECT_IN_PROGRESS_MESSAGE = 'Redirecting to Google sign-in...';
+
+let authPersistencePromise: Promise<void> | null = null;
+
 async function ensureAuthPersistence() {
-	try {
-		await setPersistence(auth, browserLocalPersistence);
-		return;
-	} catch {
-		// Fallback for environments where local persistence is unavailable.
+	if (!authPersistencePromise) {
+		authPersistencePromise = (async () => {
+			for (const persistence of authPersistences) {
+				try {
+					await setPersistence(auth, persistence);
+					return;
+				} catch {
+					// Try the next persistence backend.
+				}
+			}
+		})();
 	}
 
+	await authPersistencePromise;
+}
+
+function setAuthRedirectPending() {
 	try {
-		await setPersistence(auth, browserSessionPersistence);
+		sessionStorage.setItem(AUTH_REDIRECT_PENDING_KEY, '1');
+		sessionStorage.setItem(AUTH_REDIRECT_STARTED_AT_KEY, String(Date.now()));
 	} catch {
-		// Continue without hard-failing; login flow can still proceed.
+		// Redirect can still proceed when sessionStorage is unavailable.
 	}
+}
+
+function clearAuthRedirectPending() {
+	try {
+		sessionStorage.removeItem(AUTH_REDIRECT_PENDING_KEY);
+		sessionStorage.removeItem(AUTH_REDIRECT_STARTED_AT_KEY);
+	} catch {
+		// Ignore storage cleanup failures.
+	}
+}
+
+export function hasPendingAuthRedirect(): boolean {
+	try {
+		if (sessionStorage.getItem(AUTH_REDIRECT_PENDING_KEY) !== '1') return false;
+
+		const startedAt = Number(sessionStorage.getItem(AUTH_REDIRECT_STARTED_AT_KEY));
+		if (!Number.isFinite(startedAt)) {
+			clearAuthRedirectPending();
+			return false;
+		}
+
+		if (Date.now() - startedAt > AUTH_REDIRECT_PENDING_TTL_MS) {
+			clearAuthRedirectPending();
+			return false;
+		}
+
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function isAuthRedirectInProgressError(error: unknown): boolean {
+	return error instanceof Error && error.message === AUTH_REDIRECT_IN_PROGRESS_MESSAGE;
+}
+
+function waitForInitialAuthState(timeoutMs: number): Promise<void> {
+	if ('authStateReady' in auth && typeof auth.authStateReady === 'function') {
+		return Promise.race([
+			auth.authStateReady().catch(() => undefined),
+			new Promise<void>((resolve) => window.setTimeout(resolve, timeoutMs)),
+		]);
+	}
+
+	return new Promise<void>((resolve) => {
+		let settled = false;
+		let unsubscribe: (() => void) | undefined;
+
+		const finish = () => {
+			if (settled) return;
+			settled = true;
+			window.clearTimeout(timeoutId);
+			unsubscribe?.();
+			resolve();
+		};
+
+		const timeoutId = window.setTimeout(finish, timeoutMs);
+		unsubscribe = onAuthStateChanged(auth, finish, finish);
+	});
 }
 
 function withTimeoutSignal(timeoutMs: number) {
@@ -111,10 +207,28 @@ function persistAuthState(user: User, role: UserRole) {
 	localStorage.setItem('userRole', role);
 }
 
-export async function getRedirectResultIfAny(): Promise<User | null> {
+export async function getRedirectResultIfAny(options: {
+	waitForCurrentUser?: boolean;
+	timeoutMs?: number;
+} = {}): Promise<User | null> {
 	await ensureAuthPersistence();
-	const result = await getRedirectResult(auth);
-	return result?.user ?? null;
+
+	const wasPending = hasPendingAuthRedirect();
+	try {
+		const result = await getRedirectResult(auth);
+		if (result?.user) return result.user;
+
+		if (wasPending || options.waitForCurrentUser) {
+			await waitForInitialAuthState(options.timeoutMs ?? 5000);
+			return auth.currentUser;
+		}
+
+		return null;
+	} finally {
+		if (wasPending) {
+			clearAuthRedirectPending();
+		}
+	}
 }
 
 export async function handleGoogleSignIn(): Promise<User> {
@@ -130,8 +244,14 @@ export async function handleGoogleSignIn(): Promise<User> {
 				: '';
 
 		if (code === 'auth/popup-blocked' || code === 'auth/popup-closed-by-user') {
-			await signInWithRedirect(auth, provider);
-			throw new Error('Redirecting to Google sign-in...');
+			setAuthRedirectPending();
+			try {
+				await signInWithRedirect(auth, provider);
+			} catch (redirectError) {
+				clearAuthRedirectPending();
+				throw redirectError;
+			}
+			throw new Error(AUTH_REDIRECT_IN_PROGRESS_MESSAGE);
 		}
 
 		// Ensure error is always an Error instance

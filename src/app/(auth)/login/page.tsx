@@ -4,10 +4,11 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  clearAuthState,
   getRedirectResultIfAny,
   getStoredAuth,
+  hasPendingAuthRedirect,
   handleGoogleSignIn,
+  isAuthRedirectInProgressError,
   processAuthenticatedUser,
   redirectPathByRole,
   waitForAuthSession,
@@ -47,6 +48,10 @@ export default function LoginPage() {
       await waitForAuthSession(10000);
       redirectByRole(role);
     } catch (error) {
+      if (isAuthRedirectInProgressError(error)) {
+        return;
+      }
+
       const message = error instanceof Error ? error.message : 'Login failed. Please try again.';
       showToast(message, 'error');
       setIsSubmitting(false);
@@ -58,32 +63,54 @@ export default function LoginPage() {
     router.prefetch('/teacher');
     router.prefetch('/creator');
 
-    const blockedEmail = localStorage.getItem('blockedUser');
-    if (blockedEmail) {
-      showToast('Your account has been blocked due to repeated violations. Please contact admin for support.', 'error');
-      router.replace('/');
-      return;
-    }
+    let active = true;
 
-    const stored = getStoredAuth();
-    if (stored?.user && stored.role) {
-      redirectByRole(stored.role);
-      return;
-    }
+    const resolveInitialAuth = async () => {
+      const blockedEmail = localStorage.getItem('blockedUser');
+      if (blockedEmail) {
+        if (active) {
+          showToast('Your account has been blocked due to repeated violations. Please contact admin for support.', 'error');
+          router.replace('/');
+        }
+        return;
+      }
 
-    void getRedirectResultIfAny()
-      .then(async (user) => {
-        if (!user) return;
-        const role = await processAuthenticatedUser(user);
-        await waitForAuthSession(10000);
-        redirectByRole(role);
-      })
-      .catch(() => {
-        showToast('Login failed. Please try again.', 'error');
-      })
-      .finally(() => {
-        setIsSubmitting(false);
-      });
+      const hasPendingRedirect = hasPendingAuthRedirect();
+      if (hasPendingRedirect && active) {
+        setIsSubmitting(true);
+      }
+
+      try {
+        const redirectUser = await getRedirectResultIfAny({
+          waitForCurrentUser: hasPendingRedirect,
+          timeoutMs: 10000,
+        });
+
+        if (!active) return;
+
+        if (redirectUser) {
+          const role = await processAuthenticatedUser(redirectUser);
+          await waitForAuthSession(10000);
+          if (active) redirectByRole(role);
+          return;
+        }
+
+        const stored = getStoredAuth();
+        if (stored?.user && stored.role) {
+          redirectByRole(stored.role);
+        }
+      } catch {
+        if (active) {
+          showToast('Login failed. Please try again.', 'error');
+        }
+      } finally {
+        if (active) {
+          setIsSubmitting(false);
+        }
+      }
+    };
+
+    void resolveInitialAuth();
 
     const onMouseMove = (e: MouseEvent) => {
       const card = cardRef.current;
@@ -106,6 +133,7 @@ export default function LoginPage() {
     cardRef.current?.addEventListener('mouseleave', onMouseLeave);
 
     return () => {
+      active = false;
       document.removeEventListener('mousemove', onMouseMove);
       cardRef.current?.removeEventListener('mouseleave', onMouseLeave);
     };
