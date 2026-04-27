@@ -1,6 +1,7 @@
 'use client';
 import {
 	browserLocalPersistence,
+	browserPopupRedirectResolver,
 	browserSessionPersistence,
 	GoogleAuthProvider,
 	indexedDBLocalPersistence,
@@ -26,6 +27,7 @@ function initializeBrowserAuth(): Auth {
 	try {
 		return initializeAuth(firebaseApp, {
 			persistence: authPersistences,
+			popupRedirectResolver: browserPopupRedirectResolver,
 		});
 	} catch {
 		return getAuth(firebaseApp);
