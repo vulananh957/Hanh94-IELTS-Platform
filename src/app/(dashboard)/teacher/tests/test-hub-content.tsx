@@ -6,7 +6,6 @@ import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, getFirestore, query, where } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
 import { clearAuthState } from '@/services/auth';
-import { resolveMaterialList } from '@/services/resolve-material';
 import {
   deleteTestById,
   getTestHubData,
@@ -566,7 +565,10 @@ export function TestHubContent() {
     const resolveMedia = async () => {
       try {
         const rawMedia = getPreviewMedia(previewData);
-        
+
+        // Helper to resolve media URLs (passthrough for now)
+        const resolveMaterialList = async (items: unknown): Promise<string[]> => (Array.isArray(items) ? items : []) as string[];
+
         const [writingTask1, writingTask2, reading, listening] = await Promise.all([
           resolveMaterialList(rawMedia.writingTask1),
           resolveMaterialList(rawMedia.writingTask2),

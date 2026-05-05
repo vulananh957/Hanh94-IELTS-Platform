@@ -3,7 +3,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
-import { resolveMaterialUrl } from '@/services/resolve-material';
 import type { WritingResult } from '@/services/student-writing-results';
 
 interface DrawerProps {
@@ -81,6 +80,9 @@ export function WritingResultDrawer({ isOpen, onClose, result, onPrev, onNext, h
     let isMounted = true;
     const db = getFirestore(firebaseApp);
     
+    // Type guard: cast result as non-null since we've checked above
+    const res = result as WritingResult;
+
     // Recursively collect all string values from a nested structure
     function collectStrings(value: unknown, output: string[], depth = 0): void {
       if (depth > 7 || value == null) return;
@@ -148,11 +150,11 @@ export function WritingResultDrawer({ isOpen, onClose, result, onPrev, onNext, h
     async function fetchPrompt() {
       try {
         // Fetch by testId (document ID)
-        if (result.testId) {
-          const snap = await getDoc(doc(db, 'tests', result.testId));
+        if (res.testId) {
+          const snap = await getDoc(doc(db, 'tests', res.testId));
           if (snap.exists()) {
             const url = extractPromptFromTestData(snap.data() as Record<string, unknown>);
-            const resolved = url ? await resolveMaterialUrl(url) : null;
+            const resolved = url;
             if (isMounted) {
               fetchCacheRef.current[cacheKey] = resolved;
               setFetchedPromptUrl(resolved);
