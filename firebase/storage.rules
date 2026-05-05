@@ -1,9 +1,10 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    // Allow authenticated users to read test materials
+    // Allow public read of test materials (PDF, audio)
+    // These are learning materials, safe to be public
     match /tests/{allPaths=**} {
-      allow read: if request.auth != null;
+      allow read: if true;
       allow write: if false;
     }
     
@@ -13,9 +14,9 @@ service firebase.storage {
       allow write: if request.auth != null;
     }
     
-    // Allow authenticated users to read feedback files
+    // Allow public read of feedback files (teacher already provided to student)
     match /feedback/{allPaths=**} {
-      allow read: if request.auth != null;
+      allow read: if true;
       allow write: if false;
     }
     
