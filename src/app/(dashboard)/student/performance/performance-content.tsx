@@ -483,14 +483,18 @@ export function PerformanceContent() {
                   <>
                     <div className="perf-filters">
                       <input
+                        id="wr-search"
                         type="text"
                         className="perf-filter-input"
                         placeholder="Search tests..."
+                        aria-label="Search writing tests"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                       />
                       <select
+                        id="wr-status-filter"
                         className="perf-filter-select"
+                        aria-label="Filter by grading status"
                         value={statusFilter}
                         onChange={(e) => setStatusFilter(e.target.value as any)}
                       >
@@ -499,7 +503,9 @@ export function PerformanceContent() {
                         <option value="pending">Pending</option>
                       </select>
                       <select
+                        id="wr-time-filter"
                         className="perf-filter-select"
+                        aria-label="Filter by time period"
                         value={timeFilter}
                         onChange={(e) => setTimeFilter(e.target.value as any)}
                       >

@@ -349,7 +349,7 @@ export function ObjectiveTestDrawer({
         {/* ── Header ─────────────────────────────────────── */}
         <div className="obj-drawer-header">
           <div className="obj-drawer-header-left">
-            <button className="obj-drawer-close" onClick={onClose} title="Close">
+            <button className="obj-drawer-close" onClick={onClose} title="Close" aria-label="Close test details">
               <i className="fas fa-times" />
             </button>
             <div className="obj-drawer-title-block">
@@ -363,6 +363,7 @@ export function ObjectiveTestDrawer({
               disabled={!hasPrev}
               onClick={onPrev}
               title="Previous (←)"
+              aria-label="View previous test"
             >
               <i className="fas fa-chevron-left" />
             </button>
@@ -371,6 +372,7 @@ export function ObjectiveTestDrawer({
               disabled={!hasNext}
               onClick={onNext}
               title="Next (→)"
+              aria-label="View next test"
             >
               <i className="fas fa-chevron-right" />
             </button>
