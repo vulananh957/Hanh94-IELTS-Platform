@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
 import { firebaseApp } from '@/services/firebase';
 import { clearAuthState } from '@/services/auth';
@@ -42,6 +42,7 @@ type Tab = 'objective' | 'feedback';
 
 export function PerformanceContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [auth, setAuth] = useState<any>(null);
   const [user, setUser] = useState<any>(null);
   const [className, setClassName] = useState<string | null>(null);
@@ -74,6 +75,7 @@ export function PerformanceContent() {
   const [selectedResult, setSelectedResult] = useState<WritingResult | null>(null);
 
   const loadSeq = useRef(0);
+  const deepLinkHandled = useRef(false);
 
   // Auth init
   useEffect(() => {
@@ -214,6 +216,44 @@ export function PerformanceContent() {
     setSelectedResult(result);
     setDrawerOpen(true);
   };
+
+  useEffect(() => {
+    const reviewTestId = searchParams.get('reviewTestId')?.trim();
+    if (!reviewTestId || deepLinkHandled.current) return;
+    if (objLoading || writingLoading) return;
+
+    const objectiveMatchIdx = objTests.findIndex((test) => test.testId === reviewTestId);
+    if (objectiveMatchIdx >= 0) {
+      const objectiveMatch = objTests[objectiveMatchIdx];
+      setActiveTab('objective');
+      setObjPage(Math.floor(objectiveMatchIdx / ITEMS_PER_PAGE));
+      setSelectedObjTest(objectiveMatch);
+      setObjDrawerIdx(objectiveMatchIdx + 1);
+      deepLinkHandled.current = true;
+      return;
+    }
+
+    const writingMatch = writingResults.find((result) => result.testId === reviewTestId || result.id === reviewTestId);
+    if (writingMatch) {
+      setActiveTab('feedback');
+      openDrawer(writingMatch);
+      const writingMatchIdx = filteredWritingResults.findIndex((result) => result.id === writingMatch.id);
+      if (writingMatchIdx >= 0) {
+        setWritingPage(Math.floor(writingMatchIdx / ITEMS_PER_PAGE));
+      }
+      deepLinkHandled.current = true;
+      return;
+    }
+
+    deepLinkHandled.current = true;
+  }, [
+    searchParams,
+    objLoading,
+    writingLoading,
+    objTests,
+    writingResults,
+    filteredWritingResults,
+  ]);
 
   return (
     <div className="sd-container">

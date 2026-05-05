@@ -71,6 +71,10 @@ function assignmentStartHref(testId: string): string {
   return `/student/take-test?testId=${encodeURIComponent(testId)}`;
 }
 
+function assignmentReviewHref(testId: string): string {
+  return `/student/performance?reviewTestId=${encodeURIComponent(testId)}`;
+}
+
 export function AssignmentsContent() {
   const router = useRouter();
   const auth = useMemo(() => {
@@ -360,7 +364,7 @@ export function AssignmentsContent() {
                           <div className="sa-card-footer basic">
                             {isCompleted ? (
                               <>
-                                <a href="/student/performance" className="sa-card-action">
+                                <a href={assignmentReviewHref(assignment.id)} className="sa-card-action">
                                   Review result
                                 </a>
                                 <a href={assignmentStartHref(assignment.id)} className="sa-card-action muted">

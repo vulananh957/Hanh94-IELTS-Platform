@@ -58,7 +58,7 @@ function mapDocToWritingResult(id: string, data: any): WritingResult {
 
   return {
     id,
-    testId: data.testId,
+    testId: data.testId || id,
     testName: data.testName || 'Writing Test',
     writingScore: data.status === 'graded' ? data.writingScore : 'Pending',
     task1Score: data.task1Score,
