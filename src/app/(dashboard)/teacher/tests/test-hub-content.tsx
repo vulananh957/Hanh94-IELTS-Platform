@@ -385,7 +385,7 @@ export function TestHubContent() {
 
   const [previewTest, setPreviewTest] = useState<TestHubTest | null>(null);
   const [previewData, setPreviewData] = useState<PreviewData>(null);
-  const [previewMediaResolved, setPreviewMediaResolved] = useState<Record<string, string[]> | null>(null);
+  const [previewMediaResolved, setPreviewMediaResolved] = useState<{ writingTask1: string[]; writingTask2: string[]; reading: string[]; listening: string[]; passageText: string } | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [studentsTest, setStudentsTest] = useState<TestHubTest | null>(null);
   const [studentsStatusRows, setStudentsStatusRows] = useState<StudentsStatusRow[]>([]);
