@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
-import { getStorage, getDownloadURL, ref } from 'firebase/storage';
 import { firebaseApp } from '@/services/firebase';
+import { resolveMaterialList } from '@/services/resolve-material';
 import type { ObjectiveTestResult } from '@/services/student-objective-tests';
 
 /* ── types ─────────────────────────────────────────────────────── */
@@ -140,74 +140,6 @@ function collectMediaUrls(values: unknown[], kind: 'any' | 'audio' | 'pdf' = 'an
   });
 
   return Array.from(new Set(filtered));
-}
-
-function extractStoragePathFromHttpUrl(rawUrl: string): string | null {
-  try {
-    const url = new URL(rawUrl);
-    const path = url.pathname;
-
-    // https://firebasestorage.googleapis.com/v0/b/<bucket>/o/<encodedPath>
-    const firebaseMatch = path.match(/\/o\/([^/]+)$/);
-    if (firebaseMatch?.[1]) {
-      return decodeURIComponent(firebaseMatch[1]);
-    }
-
-    // https://storage.googleapis.com/<bucket>/<objectPath>
-    if (url.hostname === 'storage.googleapis.com') {
-      const parts = path.split('/').filter(Boolean);
-      if (parts.length >= 2) {
-        return decodeURIComponent(parts.slice(1).join('/'));
-      }
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-}
-
-async function resolveMaterialUrl(rawValue: string): Promise<string> {
-  const value = rawValue.trim();
-  if (!value) return '';
-
-  const storage = getStorage(firebaseApp);
-
-  if (value.startsWith('gs://')) {
-    try {
-      return await getDownloadURL(ref(storage, value));
-    } catch {
-      return value;
-    }
-  }
-
-  if (value.startsWith('http://') || value.startsWith('https://')) {
-    const storagePath = extractStoragePathFromHttpUrl(value);
-    if (!storagePath) return value;
-
-    try {
-      return await getDownloadURL(ref(storage, storagePath));
-    } catch {
-      return value;
-    }
-  }
-
-  // Handle raw object paths saved in Firestore (with/without leading slash)
-  if (value.includes('/')) {
-    const normalizedPath = value.replace(/^\/+/, '');
-    try {
-      return await getDownloadURL(ref(storage, normalizedPath));
-    } catch {
-      return value;
-    }
-  }
-
-  return value;
-}
-
-async function resolveMaterialList(urls: string[]): Promise<string[]> {
-  const resolved = await Promise.all(urls.map((url) => resolveMaterialUrl(url)));
-  return Array.from(new Set(resolved.filter((url) => url.startsWith('http://') || url.startsWith('https://'))));
 }
 
 function buildTestMaterial(

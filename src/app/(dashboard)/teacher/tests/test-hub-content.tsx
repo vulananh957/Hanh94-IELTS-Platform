@@ -6,6 +6,7 @@ import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, getFirestore, query, where } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
 import { clearAuthState } from '@/services/auth';
+import { resolveMaterialList } from '@/services/resolve-material';
 import {
   deleteTestById,
   getTestHubData,
@@ -384,6 +385,7 @@ export function TestHubContent() {
 
   const [previewTest, setPreviewTest] = useState<TestHubTest | null>(null);
   const [previewData, setPreviewData] = useState<PreviewData>(null);
+  const [previewMediaResolved, setPreviewMediaResolved] = useState<Record<string, string[]> | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [studentsTest, setStudentsTest] = useState<TestHubTest | null>(null);
   const [studentsStatusRows, setStudentsStatusRows] = useState<StudentsStatusRow[]>([]);
@@ -551,6 +553,48 @@ export function TestHubContent() {
       cancelled = true;
     };
   }, [previewTest]);
+
+  // Resolve preview material URLs from Firebase Storage
+  useEffect(() => {
+    if (!previewData) {
+      setPreviewMediaResolved(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const resolveMedia = async () => {
+      try {
+        const rawMedia = getPreviewMedia(previewData);
+        
+        const [writingTask1, writingTask2, reading, listening] = await Promise.all([
+          resolveMaterialList(rawMedia.writingTask1),
+          resolveMaterialList(rawMedia.writingTask2),
+          resolveMaterialList(rawMedia.reading),
+          resolveMaterialList(rawMedia.listening),
+        ]);
+
+        if (!cancelled) {
+          setPreviewMediaResolved({
+            writingTask1,
+            writingTask2,
+            reading,
+            listening,
+            passageText: rawMedia.passageText,
+          });
+        }
+      } catch (err) {
+        console.warn('[PREVIEW] Failed to resolve media URLs:', err);
+        if (!cancelled) setPreviewMediaResolved(null);
+      }
+    };
+
+    void resolveMedia();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [previewData]);
 
   const filteredTests = useMemo(() => {
     let list = [...tests];
@@ -852,7 +896,7 @@ export function TestHubContent() {
     return `${dateText} ${timeText}`;
   };
 
-  const previewMedia = useMemo(() => getPreviewMedia(previewData), [previewData]);
+  const previewMedia = useMemo(() => previewMediaResolved || getPreviewMedia(previewData), [previewMediaResolved, previewData]);
 
   const previewSections = useMemo(
     () => buildPreviewSections(previewData, previewTest?.skill ?? 'unknown'),

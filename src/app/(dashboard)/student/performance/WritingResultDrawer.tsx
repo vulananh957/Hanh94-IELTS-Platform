@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
+import { resolveMaterialUrl } from '@/services/resolve-material';
 import type { WritingResult } from '@/services/student-writing-results';
 
 interface DrawerProps {
@@ -140,8 +141,9 @@ export function WritingResultDrawer({ isOpen, onClose, result, onPrev, onNext, h
           const snap = await getDoc(doc(db, 'tests', currentResult.testId));
           if (snap.exists()) {
             const url = extractPromptFromTestData(snap.data() as Record<string, unknown>);
-            console.log('[PROMPT] Found test by ID, url:', url);
-            if (isMounted) setFetchedPromptUrl(url);
+            const resolved = url ? await resolveMaterialUrl(url) : null;
+            console.log('[PROMPT] Found test by ID, url:', resolved);
+            if (isMounted) setFetchedPromptUrl(resolved);
             return;
           }
           console.log('[PROMPT] Test doc not found by ID:', currentResult.testId, '→ trying name fallback');
@@ -163,15 +165,17 @@ export function WritingResultDrawer({ isOpen, onClose, result, onPrev, onNext, h
               const testData = testDoc.data() as Record<string, unknown>;
               if (testData.skill === 'writing') {
                 const url = extractPromptFromTestData(testData);
-                console.log('[PROMPT] Found test by name, url:', url);
-                if (isMounted) setFetchedPromptUrl(url);
+                const resolved = url ? await resolveMaterialUrl(url) : null;
+                console.log('[PROMPT] Found test by name, url:', resolved);
+                if (isMounted) setFetchedPromptUrl(resolved);
                 return;
               }
             }
             // If no writing-skill match, try any match
             const url = extractPromptFromTestData(snapshot.docs[0].data() as Record<string, unknown>);
-            console.log('[PROMPT] Found test by name (any skill), url:', url);
-            if (isMounted) setFetchedPromptUrl(url);
+            const resolved = url ? await resolveMaterialUrl(url) : null;
+            console.log('[PROMPT] Found test by name (any skill), url:', resolved);
+            if (isMounted) setFetchedPromptUrl(resolved);
             return;
           }
           console.log('[PROMPT] No test found by name either:', currentResult.testName);
