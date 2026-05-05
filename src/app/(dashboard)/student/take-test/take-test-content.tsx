@@ -699,9 +699,10 @@ export function TakeTestContent() {
     });
   };
 
-  const validateWriting = (): boolean => {
+  const validateWriting = (isAutoSubmit = false): boolean => {
     if (!test || skill !== 'writing') return true;
-    if (test.writingRule === 'auto-submit') return true;
+    if (isAutoSubmit) return true; // auto-submit when time is up always ignores word counts
+    if (test.writingRule === 'auto-submit') return true; // also allow manual early submit if rule explicitly allows it
 
     const task1Words = (answersRef.current.writingTask1 || '').trim()
       ? (answersRef.current.writingTask1 || '').trim().split(/\s+/).length
@@ -806,7 +807,7 @@ export function TakeTestContent() {
   async function submitTest(auto = false) {
     if (!test || !attemptIdRef.current || isSubmitting) return;
     if (!auto && !confirm('Submit your test now?')) return;
-    if (!validateWriting()) return;
+    if (!validateWriting(auto)) return;
 
     setIsSubmitting(true);
     stopTimer();
