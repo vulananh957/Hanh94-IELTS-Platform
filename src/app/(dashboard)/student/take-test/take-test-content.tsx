@@ -425,6 +425,8 @@ export function TakeTestContent() {
     warningCountRef.current += 1;
     setViolations(violationsRef.current);
     setWarningCount(warningCountRef.current);
+    scheduleAutosave();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const scheduleAutosave = useCallback(() => {
@@ -738,15 +740,20 @@ export function TakeTestContent() {
       return;
     }
 
-    const response = await callFunction<{ attemptId: string }>('/startAttempt', 'POST', {
-      examId: null,
-      testId: test.id,
-    });
-    attemptIdRef.current = response.attemptId;
-    setAttemptId(response.attemptId);
-    isStartedRef.current = true;
-    setIsStarted(true);
-    startTimer(durationMinutes * 60);
+    try {
+      const response = await callFunction<{ attemptId: string }>('/startAttempt', 'POST', {
+        examId: null,
+        testId: test.id,
+      });
+      attemptIdRef.current = response.attemptId;
+      setAttemptId(response.attemptId);
+      isStartedRef.current = true;
+      setIsStarted(true);
+      startTimer(durationMinutes * 60);
+    } catch (err) {
+      stopMonitoring();
+      alert(err instanceof Error ? err.message : 'Failed to start test. Please try again.');
+    }
   };
 
   async function saveWritingSubmission(resp: SubmitResponse) {
@@ -1047,8 +1054,8 @@ export function TakeTestContent() {
       <header className="tt-topbar">
         <div className="tt-brand"><i className="fas fa-clipboard-list" /> Take Test</div>
         <div className="tt-topbar-actions">
-          {violations.length > 0 && <span className="tt-warning"><i className="fas fa-shield-halved" /> {violations.length}</span>}
-          <span className="tt-timer"><i className="fas fa-clock" /> {formatSeconds(remainingSeconds)}</span>
+          <span className="tt-warning" title="Anti-cheat violations detected"><i className="fas fa-shield-halved" /> {violations.length}</span>
+          <span className={`tt-timer${remainingSeconds < 300 && remainingSeconds > 0 ? ' urgent' : ''}`} aria-live="polite" aria-label={`Time remaining: ${formatSeconds(remainingSeconds)}`}><i className="fas fa-clock" /> {formatSeconds(remainingSeconds)}</span>
           <button type="button" className="tt-submit" disabled={!isStarted || isSubmitting} onClick={() => submitTest(false)}>
             {isSubmitting ? 'Submitting...' : 'Submit'}
           </button>
@@ -1102,7 +1109,7 @@ export function TakeTestContent() {
                   src={url}
                   onEnded={() => setAudioPlayed((current) => ({ ...current, [part - 1]: 'ended' }))}
                 />
-                <button type="button" disabled={status !== 'idle'} onClick={() => playAudio(part - 1)}>
+                <button type="button" disabled={status !== 'idle'} onClick={() => playAudio(part - 1)} aria-label={`Play audio part ${part}`}>
                   <i className="fas fa-play" /> {status === 'idle' ? 'Play' : status === 'playing' ? 'Playing...' : 'Played'}
                 </button>
                 <span>{status === 'idle' ? 'Click Play to start listening' : status === 'playing' ? 'Playing... Cannot pause or replay' : 'Audio has ended. Cannot replay.'}</span>
@@ -1165,7 +1172,7 @@ export function TakeTestContent() {
       </main>
 
       <div className="tt-camera">
-        <video ref={cameraVideoRef} autoPlay muted playsInline />
+        <video ref={cameraVideoRef} autoPlay muted playsInline aria-label="Camera monitoring feed" />
       </div>
 
       {submitResponse && (
@@ -1173,7 +1180,7 @@ export function TakeTestContent() {
           <div className="tt-results-modal">
             <div className="tt-results-header">
               <h2>{skill === 'writing' ? 'Writing Submitted' : 'Test Completed'}</h2>
-              <button type="button" onClick={() => router.push('/student/performance')}><i className="fas fa-times" /></button>
+              <button type="button" onClick={() => router.push('/student/performance')} aria-label="Close results"><i className="fas fa-times" /></button>
             </div>
             {skill !== 'writing' ? (
               <div className="tt-result-stats">

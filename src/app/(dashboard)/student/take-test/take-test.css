@@ -47,6 +47,18 @@
   background: rgba(255, 255, 255, 0.16);
   color: #ffedd5;
   font-size: 0.9rem;
+  display: inline-flex;
+  align-items: center;
+}
+
+.tt-timer.urgent {
+  color: #fca5a5;
+  animation: timer-pulse 1s ease-in-out infinite;
+}
+
+@keyframes timer-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .tt-submit,
