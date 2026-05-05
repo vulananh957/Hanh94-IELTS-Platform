@@ -35,8 +35,10 @@ type CleanupSummary = {
   existingTests: number;
   attemptsTotal: number;
   testResultsTotal: number;
+  writingTotal: number;
   orphanAttempts: number;
   orphanTestResults: number;
+  orphanWriting: number;
   scannedAt: Date | null;
 };
 
@@ -123,7 +125,8 @@ export function CleanupContent() {
   const orphanDocsRef = useRef<{
     attempts: Array<QueryDocumentSnapshot<DocumentData>>;
     testResults: Array<QueryDocumentSnapshot<DocumentData>>;
-  }>({ attempts: [], testResults: [] });
+    writing: Array<QueryDocumentSnapshot<DocumentData>>;
+  }>({ attempts: [], testResults: [], writing: [] });
   const autoScanDoneRef = useRef(false);
 
   const [auth, setAuth] = useState<ReturnType<typeof getAuth> | null>(null);
@@ -143,13 +146,16 @@ export function CleanupContent() {
     existingTests: 0,
     attemptsTotal: 0,
     testResultsTotal: 0,
+    writingTotal: 0,
     orphanAttempts: 0,
     orphanTestResults: 0,
+    orphanWriting: 0,
     scannedAt: null,
   });
 
   const [orphanAttemptRows, setOrphanAttemptRows] = useState<OrphanPreviewRow[]>([]);
   const [orphanTestResultRows, setOrphanTestResultRows] = useState<OrphanPreviewRow[]>([]);
+  const [orphanWritingRows, setOrphanWritingRows] = useState<OrphanPreviewRow[]>([]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -211,18 +217,21 @@ export function CleanupContent() {
     try {
       const db = getFirestore(firebaseApp);
 
-      const [testsSnapshot, attemptsSnapshot, testResultsSnapshot] = await Promise.all([
+      const [testsSnapshot, attemptsSnapshot, testResultsSnapshot, writingSnapshot] = await Promise.all([
         getDocs(collection(db, 'tests')),
         getDocs(collection(db, 'attempts')),
         getDocs(collection(db, 'testResults')),
+        getDocs(collection(db, 'writing')),
       ]);
 
       const testIds = new Set<string>(testsSnapshot.docs.map((item) => item.id));
 
       const orphanAttemptsDocs: Array<QueryDocumentSnapshot<DocumentData>> = [];
       const orphanTestResultsDocs: Array<QueryDocumentSnapshot<DocumentData>> = [];
+      const orphanWritingDocs: Array<QueryDocumentSnapshot<DocumentData>> = [];
       const orphanAttemptsPreview: OrphanPreviewRow[] = [];
       const orphanTestResultsPreview: OrphanPreviewRow[] = [];
+      const orphanWritingPreview: OrphanPreviewRow[] = [];
 
       attemptsSnapshot.forEach((item) => {
         const data = item.data() as Record<string, unknown>;
@@ -273,24 +282,53 @@ export function CleanupContent() {
         });
       });
 
+      writingSnapshot.forEach((item) => {
+        const data = item.data() as Record<string, unknown>;
+        const testId = asText(data.testId, '').trim();
+
+        if (testId && testIds.has(testId)) return;
+
+        orphanWritingDocs.push(item);
+
+        const eventTimeMs =
+          toMillis(data.submittedAt)
+          ?? toMillis(data.gradedAt)
+          ?? toMillis(data.completedAt)
+          ?? toMillis(data.createdAt);
+
+        orphanWritingPreview.push({
+          id: item.id,
+          testId: testId || '(missing testId)',
+          studentEmail: asText(data.studentEmail, '-'),
+          status: asText(data.status, '-'),
+          eventTimeMs,
+          eventTimeLabel: formatEventTime(eventTimeMs),
+          path: `writing/${item.id}`,
+        });
+      });
+
       orphanDocsRef.current = {
         attempts: orphanAttemptsDocs,
         testResults: orphanTestResultsDocs,
+        writing: orphanWritingDocs,
       };
 
       setSummary({
         existingTests: testsSnapshot.size,
         attemptsTotal: attemptsSnapshot.size,
         testResultsTotal: testResultsSnapshot.size,
+        writingTotal: writingSnapshot.size,
         orphanAttempts: orphanAttemptsDocs.length,
         orphanTestResults: orphanTestResultsDocs.length,
+        orphanWriting: orphanWritingDocs.length,
         scannedAt: new Date(),
       });
 
       setOrphanAttemptRows(sortPreviewRows(orphanAttemptsPreview));
       setOrphanTestResultRows(sortPreviewRows(orphanTestResultsPreview));
+      setOrphanWritingRows(sortPreviewRows(orphanWritingPreview));
 
-      const orphanTotal = orphanAttemptsDocs.length + orphanTestResultsDocs.length;
+      const orphanTotal = orphanAttemptsDocs.length + orphanTestResultsDocs.length + orphanWritingDocs.length;
       if (orphanTotal === 0) {
         setActionMessage('No orphan documents found. Dashboard data is already clean.');
       } else {
@@ -317,8 +355,9 @@ export function CleanupContent() {
 
     const orphanAttemptDocs = orphanDocsRef.current.attempts;
     const orphanTestResultDocs = orphanDocsRef.current.testResults;
+    const orphanWritingDocs = orphanDocsRef.current.writing;
 
-    const totalOrphans = orphanAttemptDocs.length + orphanTestResultDocs.length;
+    const totalOrphans = orphanAttemptDocs.length + orphanTestResultDocs.length + orphanWritingDocs.length;
     if (totalOrphans === 0) {
       setActionMessage('No orphan documents to delete.');
       return;
@@ -327,7 +366,8 @@ export function CleanupContent() {
     const confirmed = window.confirm(
       `Delete ${totalOrphans} orphan documents?\n\n` +
       `Attempts: ${orphanAttemptDocs.length}\n` +
-      `Test Results: ${orphanTestResultDocs.length}\n\n` +
+      `Test Results: ${orphanTestResultDocs.length}\n` +
+      `Writing: ${orphanWritingDocs.length}\n\n` +
       'This operation only removes results where testId does not exist in tests collection.',
     );
 
@@ -357,6 +397,7 @@ export function CleanupContent() {
 
       await commitInChunks(orphanAttemptDocs);
       await commitInChunks(orphanTestResultDocs);
+      await commitInChunks(orphanWritingDocs);
 
       setActionMessage(`Cleanup done. Deleted ${deletedCount} orphan documents.`);
       await scanOrphanData();
@@ -436,8 +477,9 @@ export function CleanupContent() {
 
   const attemptPreview = orphanAttemptRows.slice(0, PREVIEW_LIMIT);
   const testResultPreview = orphanTestResultRows.slice(0, PREVIEW_LIMIT);
+  const writingPreview = orphanWritingRows.slice(0, PREVIEW_LIMIT);
 
-  const totalOrphans = summary.orphanAttempts + summary.orphanTestResults;
+  const totalOrphans = summary.orphanAttempts + summary.orphanTestResults + summary.orphanWriting;
 
   return (
     <div className="dashboard-container cleanup-page">
@@ -562,9 +604,17 @@ export function CleanupContent() {
                 <span>Orphan Attempts</span>
                 <strong>{summary.orphanAttempts}</strong>
               </article>
+              <article className="cleanup-stat">
+                <span>Total Writing</span>
+                <strong>{summary.writingTotal}</strong>
+              </article>
               <article className="cleanup-stat warn">
                 <span>Orphan Test Results</span>
                 <strong>{summary.orphanTestResults}</strong>
+              </article>
+              <article className="cleanup-stat warn">
+                <span>Orphan Writing</span>
+                <strong>{summary.orphanWriting}</strong>
               </article>
             </div>
 
@@ -636,6 +686,44 @@ export function CleanupContent() {
                   <tbody>
                     {testResultPreview.map((row) => (
                       <tr key={`result-${row.id}`}>
+                        <td>{row.path}</td>
+                        <td>{row.testId}</td>
+                        <td>{row.studentEmail}</td>
+                        <td>{row.status}</td>
+                        <td>{row.eventTimeLabel}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          <section className="card cleanup-card">
+            <div className="cleanup-table-header">
+              <h3>Orphan Writing Preview</h3>
+              <span>
+                Showing {Math.min(writingPreview.length, PREVIEW_LIMIT)} / {summary.orphanWriting}
+              </span>
+            </div>
+
+            {writingPreview.length === 0 ? (
+              <p className="cleanup-empty">No orphan writing submissions found.</p>
+            ) : (
+              <div className="table-container">
+                <table className="table cleanup-table">
+                  <thead>
+                    <tr>
+                      <th>Path</th>
+                      <th>Test ID</th>
+                      <th>Student</th>
+                      <th>Status</th>
+                      <th>Time</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {writingPreview.map((row) => (
+                      <tr key={`writing-${row.id}`}>
                         <td>{row.path}</td>
                         <td>{row.testId}</td>
                         <td>{row.studentEmail}</td>

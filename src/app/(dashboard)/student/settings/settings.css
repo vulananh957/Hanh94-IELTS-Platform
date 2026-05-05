@@ -1,0 +1,17 @@
+.st-page .sd-main {
+  background: var(--c-bg);
+}
+
+.st-placeholder {
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+
+.st-placeholder p {
+  margin: 0;
+  color: var(--c-deep);
+  font-size: 1.05rem;
+  font-weight: 700;
+}
