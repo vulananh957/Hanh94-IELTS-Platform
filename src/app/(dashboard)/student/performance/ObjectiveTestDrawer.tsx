@@ -3,7 +3,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
-import { resolveMaterialList } from '@/services/resolve-material';
 import type { ObjectiveTestResult } from '@/services/student-objective-tests';
 
 /* ── types ─────────────────────────────────────────────────────── */
@@ -272,20 +271,16 @@ export function ObjectiveTestDrawer({
   const fetchDetail = useCallback(async () => {
     setLoading(true);
     setError(null);
-    setSections([]);
-    setTotalCorrect(0);
-    setTotalQuestions(0);
-    setMaterial(EMPTY_MATERIAL);
 
     try {
       const db = getFirestore(firebaseApp);
 
-      // 1) Fetch testResults doc (student answers)
-      const trSnap = await getDoc(doc(db, 'testResults', test.id));
+      // 1) Fetch both docs in parallel
+      const [trSnap, testSnap] = await Promise.all([
+        getDoc(doc(db, 'testResults', test.id)),
+        getDoc(doc(db, 'tests', test.testId)),
+      ]);
       const trData = trSnap.exists() ? (trSnap.data() as Record<string, unknown>) : null;
-
-      // 2) Fetch tests doc (answer key + structure)
-      const testSnap = await getDoc(doc(db, 'tests', test.testId));
       const testData = testSnap.exists() ? (testSnap.data() as Record<string, unknown>) : null;
 
       if (!trData && !testData) {
@@ -294,17 +289,7 @@ export function ObjectiveTestDrawer({
         return;
       }
 
-      const rawMaterial = buildTestMaterial(testData, test.skill);
-      const [pdfUrls, audioUrls] = await Promise.all([
-        resolveMaterialList(rawMaterial.pdfUrls),
-        resolveMaterialList(rawMaterial.audioUrls),
-      ]);
-
-      setMaterial({
-        ...rawMaterial,
-        pdfUrls,
-        audioUrls,
-      });
+      setMaterial(buildTestMaterial(testData, test.skill));
 
       // Extract answer key from tests doc
       const answerKey = flattenAnswerKey(testData?.answerKey);

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
 import { resolveMaterialUrl } from '@/services/resolve-material';
@@ -43,6 +43,7 @@ function Accordion({ title, defaultOpen = false, children }: { title: React.Reac
 
 export function WritingResultDrawer({ isOpen, onClose, result, onPrev, onNext, hasPrev, hasNext }: DrawerProps) {
   const [fetchedPromptUrl, setFetchedPromptUrl] = useState<string | null>(null);
+  const fetchCacheRef = useRef<Record<string, string | null>>({});
 
   useEffect(() => {
     if (isOpen) {
@@ -57,16 +58,26 @@ export function WritingResultDrawer({ isOpen, onClose, result, onPrev, onNext, h
 
   useEffect(() => {
     if (!result) {
+      // eslint-disable-next-line react-hooks/exhaustive-deps, react-hooks/set-state-in-effect
       setFetchedPromptUrl(null);
       return;
     }
-    const currentResult = result;
-    
-    // If result already has a promptFileUrl, no need to fetch from test doc
-    if (currentResult.promptFileUrl) {
+
+    // Use cache if available
+    const cacheKey = result.id;
+    if (cacheKey in fetchCacheRef.current) {
+      const cached = fetchCacheRef.current[cacheKey];
+      setFetchedPromptUrl(cached);
       return;
     }
-    
+
+    // If result already has a promptFileUrl, cache and return
+    if (result.promptFileUrl) {
+      fetchCacheRef.current[cacheKey] = result.promptFileUrl;
+      setFetchedPromptUrl(result.promptFileUrl);
+      return;
+    }
+
     let isMounted = true;
     const db = getFirestore(firebaseApp);
     
@@ -135,56 +146,27 @@ export function WritingResultDrawer({ isOpen, onClose, result, onPrev, onNext, h
     }
     
     async function fetchPrompt() {
-      // Strategy 1: Lookup by testId (document ID)
-      if (currentResult.testId) {
-        try {
-          const snap = await getDoc(doc(db, 'tests', currentResult.testId));
+      try {
+        // Fetch by testId (document ID)
+        if (result.testId) {
+          const snap = await getDoc(doc(db, 'tests', result.testId));
           if (snap.exists()) {
             const url = extractPromptFromTestData(snap.data() as Record<string, unknown>);
             const resolved = url ? await resolveMaterialUrl(url) : null;
-            console.log('[PROMPT] Found test by ID, url:', resolved);
-            if (isMounted) setFetchedPromptUrl(resolved);
-            return;
-          }
-          console.log('[PROMPT] Test doc not found by ID:', currentResult.testId, '→ trying name fallback');
-        } catch (err) {
-          console.warn('[PROMPT] Error fetching by ID:', err);
-        }
-      }
-      
-      // Strategy 2: Query by test name (fallback for deleted/migrated tests)
-      if (currentResult.testName) {
-        try {
-          const { collection: col, query: q, where: w, getDocs: gd } = await import('firebase/firestore');
-          const nameQuery = q(col(db, 'tests'), w('name', '==', currentResult.testName));
-          const snapshot = await gd(nameQuery);
-          
-          if (!snapshot.empty) {
-            // Try each matching test doc
-            for (const testDoc of snapshot.docs) {
-              const testData = testDoc.data() as Record<string, unknown>;
-              if (testData.skill === 'writing') {
-                const url = extractPromptFromTestData(testData);
-                const resolved = url ? await resolveMaterialUrl(url) : null;
-                console.log('[PROMPT] Found test by name, url:', resolved);
-                if (isMounted) setFetchedPromptUrl(resolved);
-                return;
-              }
+            if (isMounted) {
+              fetchCacheRef.current[cacheKey] = resolved;
+              setFetchedPromptUrl(resolved);
             }
-            // If no writing-skill match, try any match
-            const url = extractPromptFromTestData(snapshot.docs[0].data() as Record<string, unknown>);
-            const resolved = url ? await resolveMaterialUrl(url) : null;
-            console.log('[PROMPT] Found test by name (any skill), url:', resolved);
-            if (isMounted) setFetchedPromptUrl(resolved);
             return;
           }
-          console.log('[PROMPT] No test found by name either:', currentResult.testName);
-        } catch (err) {
-          console.warn('[PROMPT] Error querying by name:', err);
         }
+      } catch (err) {
+        console.warn('[PROMPT] Error fetching:', err);
       }
-      
-      if (isMounted) setFetchedPromptUrl(null);
+      if (isMounted) {
+        fetchCacheRef.current[cacheKey] = null;
+        setFetchedPromptUrl(null);
+      }
     }
     
     fetchPrompt();
