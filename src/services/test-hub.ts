@@ -5,7 +5,10 @@ import {
   getDocs,
   getFirestore,
   onSnapshot,
+  query,
   updateDoc,
+  where,
+  writeBatch,
   type Unsubscribe,
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
@@ -352,6 +355,38 @@ export function subscribeTestHubRealtime(teacherEmail: string, onChange: () => v
   };
 }
 
+/**
+ * Delete all related documents (testResults, attempts, writing) for a given testId.
+ * Runs as a best-effort operation — errors are logged but do not prevent the caller from completing.
+ */
+export async function cascadeDeleteRelatedResults(testId: string): Promise<{ deleted: number }> {
+  const db = getFirestore(firebaseApp);
+  const collections = ['testResults', 'attempts', 'writing'];
+  let totalDeleted = 0;
+
+  for (const col of collections) {
+    try {
+      const q = query(collection(db, col), where('testId', '==', testId));
+      const snapshot = await getDocs(q);
+      if (snapshot.empty) continue;
+
+      // Firestore batches max 500 operations
+      const docs = snapshot.docs;
+      for (let i = 0; i < docs.length; i += 400) {
+        const chunk = docs.slice(i, i + 400);
+        const batch = writeBatch(db);
+        chunk.forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+        totalDeleted += chunk.length;
+      }
+    } catch (err) {
+      console.warn(`[cascade-delete] Failed to clean ${col} for testId=${testId}:`, err);
+    }
+  }
+
+  return { deleted: totalDeleted };
+}
+
 export async function deleteTestById(testId: string): Promise<void> {
   const db = getFirestore(firebaseApp);
   let directDeleteMessage = '';
@@ -359,6 +394,8 @@ export async function deleteTestById(testId: string): Promise<void> {
   // Local-first delete: if client has permission, this succeeds immediately.
   try {
     await deleteDoc(doc(db, 'tests', testId));
+    // Cascade: delete related results so they don't appear as orphan data
+    await cascadeDeleteRelatedResults(testId);
     return;
   } catch (error) {
     directDeleteMessage = error instanceof Error ? error.message : 'Failed to delete test.';
@@ -376,7 +413,11 @@ export async function deleteTestById(testId: string): Promise<void> {
   // Fallback to privileged backend delete when local permissions are restricted.
   try {
     const deletedByFunction = await deleteTestViaCloudFunction(testId);
-    if (deletedByFunction) return;
+    if (deletedByFunction) {
+      // Still cascade-delete related results client-side
+      await cascadeDeleteRelatedResults(testId);
+      return;
+    }
 
     throw new Error('Delete endpoint is unavailable.');
   } catch (error) {

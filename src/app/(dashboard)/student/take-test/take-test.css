@@ -107,6 +107,8 @@
 
 .tt-media-panel {
   padding: 1.35rem;
+  display: flex;
+  flex-direction: column;
 }
 
 .tt-question-panel {
@@ -114,17 +116,22 @@
 }
 
 .tt-media-preview {
-  display: grid;
-  gap: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  height: 100%;
+  min-height: 0;
 }
 
 .tt-media-title {
   font-weight: 900;
   color: #006769;
+  flex-shrink: 0;
 }
 
 .tt-media-frame {
-  min-height: 520px;
+  flex: 1 1 0;
+  min-height: 0;
   border: 1px solid #dbe7e3;
   border-radius: 14px;
   overflow: hidden;
@@ -135,16 +142,9 @@
 .tt-media-frame img {
   width: 100%;
   height: 100%;
-  min-height: 520px;
   border: 0;
   object-fit: contain;
   display: block;
-}
-
-.tt-open-link {
-  color: #006769;
-  font-weight: 800;
-  text-decoration: none;
 }
 
 .tt-audio-card {
@@ -600,9 +600,7 @@
     grid-template-columns: 1fr;
   }
 
-  .tt-media-frame,
-  .tt-media-frame iframe,
-  .tt-media-frame img {
+  .tt-media-frame {
     min-height: 420px;
   }
 

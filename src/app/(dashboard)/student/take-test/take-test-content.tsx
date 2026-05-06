@@ -360,7 +360,6 @@ function MediaPreview({ url, label }: { url: string; label: string }) {
           <iframe src={url} title={label} />
         )}
       </div>
-      <a href={url} target="_blank" rel="noreferrer" className="tt-open-link">Open in new tab</a>
     </div>
   );
 }
