@@ -386,6 +386,8 @@ export function TakeTestContent() {
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  const [isFullscreenPaused, setIsFullscreenPaused] = useState(false);
+  const isFullscreenPausedRef = useRef(false);
   const [violations, setViolations] = useState<Array<{ type: string; description: string; timestamp: string }>>([]);
   const violationsRef = useRef<Array<{ type: string; description: string; timestamp: string }>>([]);
   const [warningCount, setWarningCount] = useState(0);
@@ -569,6 +571,14 @@ export function TakeTestContent() {
     startTimer(remainingRef.current || durationMinutes * 60);
   }, [durationMinutes, startScreenShare, startTimer]);
 
+  const resumeFullscreen = useCallback(async () => {
+    const ok = await requestFullscreen();
+    if (!ok) return;
+    isFullscreenPausedRef.current = false;
+    setIsFullscreenPaused(false);
+    startTimer(remainingRef.current || durationMinutes * 60);
+  }, [durationMinutes, requestFullscreen, startTimer]);
+
   useEffect(() => {
     const auth = getAuth(firebaseApp);
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -639,6 +649,11 @@ export function TakeTestContent() {
       if (!isStartedRef.current) return;
       if (!document.fullscreenElement) {
         recordViolation('fullscreen_exit', 'User exited fullscreen mode');
+        isPausedRef.current = true;
+        isFullscreenPausedRef.current = true;
+        setIsPaused(true);
+        setIsFullscreenPaused(true);
+        stopTimer();
       }
     };
 
@@ -648,7 +663,7 @@ export function TakeTestContent() {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       document.removeEventListener('fullscreenchange', onFullscreenChange);
     };
-  }, [recordViolation]);
+  }, [recordViolation, stopTimer]);
 
   useEffect(() => () => {
     stopMonitoring();
@@ -766,6 +781,8 @@ export function TakeTestContent() {
       stopMonitoring();
       isInitializingRef.current = false;
       setIsInitializing(false);
+      isFullscreenPausedRef.current = false;
+      setIsFullscreenPaused(false);
       alert(err instanceof Error ? err.message : 'Failed to start test. Please try again.');
     }
   };
@@ -1129,9 +1146,19 @@ export function TakeTestContent() {
       {isPaused && (
         <div className="tt-pause-overlay">
           <div>
-            <h2>Screen sharing required</h2>
-            <p>To continue, re-share your entire screen.</p>
-            <button type="button" className="tt-primary" onClick={resumeScreenShare}>Re-share screen</button>
+            {isFullscreenPaused ? (
+              <>
+                <h2>Fullscreen required</h2>
+                <p>You left fullscreen mode. Return to fullscreen to continue the test.</p>
+                <button type="button" className="tt-primary" onClick={resumeFullscreen}>Return to fullscreen</button>
+              </>
+            ) : (
+              <>
+                <h2>Screen sharing required</h2>
+                <p>To continue, re-share your entire screen.</p>
+                <button type="button" className="tt-primary" onClick={resumeScreenShare}>Re-share screen</button>
+              </>
+            )}
           </div>
         </div>
       )}
