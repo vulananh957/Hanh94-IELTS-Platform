@@ -398,6 +398,7 @@ export function TakeTestContent() {
   const [activeWritingTask, setActiveWritingTask] = useState<1 | 2>(1);
   const [audioPlayed, setAudioPlayed] = useState<Record<number, 'idle' | 'playing' | 'ended'>>({});
   const [isInitializing, setIsInitializing] = useState(false);
+  const [isMonitoringReady, setIsMonitoringReady] = useState(false);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autosaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -758,15 +759,22 @@ export function TakeTestContent() {
       });
       attemptIdRef.current = response.attemptId;
       setAttemptId(response.attemptId);
-      isStartedRef.current = true;
-      setIsStarted(true);
-      startTimer(durationMinutes * 60);
+      isInitializingRef.current = false;
+      setIsInitializing(false);
+      setIsMonitoringReady(true);
     } catch (err) {
       stopMonitoring();
       isInitializingRef.current = false;
       setIsInitializing(false);
       alert(err instanceof Error ? err.message : 'Failed to start test. Please try again.');
     }
+  };
+
+  const beginTest = () => {
+    if (!test) return;
+    isStartedRef.current = true;
+    setIsStarted(true);
+    startTimer(durationMinutes * 60);
   };
 
   async function saveWritingSubmission(resp: SubmitResponse) {
@@ -1078,22 +1086,42 @@ export function TakeTestContent() {
       {!isStarted && !submitResponse && (
         <div className="tt-start-overlay">
           <div className="tt-start-modal">
-            <div className="tt-start-icon"><i className="fas fa-shield-alt" /></div>
-            <h1>Ready to Start Test?</h1>
-            <p>You are about to start <strong>{test.name || 'the test'}</strong>.</p>
-            <p>Duration: <strong>{durationMinutes} minutes</strong></p>
-            <div className="tt-setup-list">
-              <div><i className="fas fa-expand" /> Fullscreen is required</div>
-              <div><i className="fas fa-camera" /> Camera monitoring is required</div>
-              <div><i className="fas fa-display" /> Entire screen sharing is required</div>
-              <div><i className="fas fa-eye" /> Tab switches and exits are logged</div>
-            </div>
-            <div className="tt-modal-actions">
-              <button type="button" className="tt-secondary" onClick={() => router.push('/student/assignments')} disabled={isInitializing}>Cancel</button>
-              <button type="button" className="tt-primary" onClick={startTest} disabled={isInitializing}>
-                {isInitializing ? 'Initializing...' : 'Start Test'}
-              </button>
-            </div>
+            {!isMonitoringReady ? (
+              <>
+                <div className="tt-start-icon"><i className="fas fa-shield-alt" /></div>
+                <h1>Ready to Start Test?</h1>
+                <p>You are about to start <strong>{test.name || 'the test'}</strong>.</p>
+                <p>Duration: <strong>{durationMinutes} minutes</strong></p>
+                <div className="tt-setup-list">
+                  <div><i className="fas fa-expand" /> Fullscreen is required</div>
+                  <div><i className="fas fa-camera" /> Camera monitoring is required</div>
+                  <div><i className="fas fa-display" /> Entire screen sharing is required</div>
+                  <div><i className="fas fa-eye" /> Tab switches and exits are logged</div>
+                </div>
+                <div className="tt-modal-actions">
+                  <button type="button" className="tt-secondary" onClick={() => router.push('/student/assignments')} disabled={isInitializing}>Cancel</button>
+                  <button type="button" className="tt-primary" onClick={startTest} disabled={isInitializing}>
+                    {isInitializing ? 'Setting up monitoring...' : 'Start Test'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="tt-start-icon"><i className="fas fa-check-circle" style={{ color: '#10b981' }} /></div>
+                <h1>Monitoring Confirmed</h1>
+                <p>All monitoring systems are active and running.</p>
+                <div className="tt-setup-list">
+                  <div><i className="fas fa-check" style={{ color: '#10b981' }} /> Fullscreen mode: Active</div>
+                  <div><i className="fas fa-check" style={{ color: '#10b981' }} /> Camera monitoring: Active</div>
+                  <div><i className="fas fa-check" style={{ color: '#10b981' }} /> Screen sharing: Active</div>
+                </div>
+                <p style={{ marginTop: '20px', fontWeight: 'bold' }}>Click &quot;Begin Test&quot; to start the timer and begin answering questions.</p>
+                <div className="tt-modal-actions">
+                  <button type="button" className="tt-secondary" onClick={() => { setIsMonitoringReady(false); stopMonitoring(); }} disabled={false}>Cancel & Redo Setup</button>
+                  <button type="button" className="tt-primary" onClick={beginTest} disabled={false}>Begin Test</button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
