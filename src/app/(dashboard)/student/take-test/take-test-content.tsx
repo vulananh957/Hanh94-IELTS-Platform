@@ -397,11 +397,13 @@ export function TakeTestContent() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeWritingTask, setActiveWritingTask] = useState<1 | 2>(1);
   const [audioPlayed, setAudioPlayed] = useState<Record<number, 'idle' | 'playing' | 'ended'>>({});
+  const [isInitializing, setIsInitializing] = useState(false);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autosaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const lastTabSwitchRef = useRef(0);
+  const isInitializingRef = useRef(false);
 
   const skill = normalizeSkill(test?.skill);
   const durationMinutes = useMemo(() => {
@@ -720,23 +722,32 @@ export function TakeTestContent() {
   };
 
   const startTest = async () => {
-    if (!test) return;
+    if (!test || isInitializingRef.current) return;
+
+    isInitializingRef.current = true;
+    setIsInitializing(true);
 
     const cameraOk = await startCamera();
     if (!cameraOk) {
       alert('Camera access is required to take this test.');
+      isInitializingRef.current = false;
+      setIsInitializing(false);
       return;
     }
 
     const screenOk = await startScreenShare();
     if (!screenOk) {
       alert('Screen sharing is required to take this test.');
+      isInitializingRef.current = false;
+      setIsInitializing(false);
       return;
     }
 
     const fullscreenOk = await requestFullscreen();
     if (!fullscreenOk) {
       alert('Fullscreen mode is required to take this test.');
+      isInitializingRef.current = false;
+      setIsInitializing(false);
       return;
     }
 
@@ -752,6 +763,8 @@ export function TakeTestContent() {
       startTimer(durationMinutes * 60);
     } catch (err) {
       stopMonitoring();
+      isInitializingRef.current = false;
+      setIsInitializing(false);
       alert(err instanceof Error ? err.message : 'Failed to start test. Please try again.');
     }
   };
@@ -1076,8 +1089,10 @@ export function TakeTestContent() {
               <div><i className="fas fa-eye" /> Tab switches and exits are logged</div>
             </div>
             <div className="tt-modal-actions">
-              <button type="button" className="tt-secondary" onClick={() => router.push('/student/assignments')}>Cancel</button>
-              <button type="button" className="tt-primary" onClick={startTest}>Start Test</button>
+              <button type="button" className="tt-secondary" onClick={() => router.push('/student/assignments')} disabled={isInitializing}>Cancel</button>
+              <button type="button" className="tt-primary" onClick={startTest} disabled={isInitializing}>
+                {isInitializing ? 'Initializing...' : 'Start Test'}
+              </button>
             </div>
           </div>
         </div>
