@@ -474,7 +474,7 @@ export function StudentDashboardContent() {
               {/* Zone Row 1: Activity Chart (left) + Calendar (right) */}
               <div className="sd-zone-row">
                 {/* Activity Chart */}
-                <div className="sd-card">
+                <div className="sd-card sd-activity-card">
                   <div className="sd-card-header">
                     <span className="sd-card-title">My Learning Activity</span>
                     <span style={{ fontSize: '0.76rem', color: 'var(--c-subtle)' }}>Last 7 days</span>

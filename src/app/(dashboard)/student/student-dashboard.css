@@ -344,6 +344,17 @@
   border: 1px solid var(--c-border);
 }
 
+.sd-activity-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.sd-activity-card .sd-chart-wrap {
+  flex: 1;
+  min-height: 240px;
+  margin-top: auto;
+}
+
 .sd-card-header {
   display: flex;
   align-items: center;
@@ -369,12 +380,12 @@
 
 /* ── Activity chart ─────────────────────────────────────────── */
 .sd-chart-wrap {
-  height: 180px;
   display: flex;
   align-items: flex-end;
   gap: 6px;
   padding: 0 2px;
   position: relative;
+  height: 100%;
 }
 
 .sd-chart-bar-col {
