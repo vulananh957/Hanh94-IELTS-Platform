@@ -574,7 +574,9 @@ export function TakeTestContent() {
   const resumeFullscreen = useCallback(async () => {
     const ok = await requestFullscreen();
     if (!ok) return;
+    isPausedRef.current = false;
     isFullscreenPausedRef.current = false;
+    setIsPaused(false);
     setIsFullscreenPaused(false);
     startTimer(remainingRef.current || durationMinutes * 60);
   }, [durationMinutes, requestFullscreen, startTimer]);
