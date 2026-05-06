@@ -388,6 +388,8 @@ export function TakeTestContent() {
   const screenStreamRef = useRef<MediaStream | null>(null);
   const [isFullscreenPaused, setIsFullscreenPaused] = useState(false);
   const isFullscreenPausedRef = useRef(false);
+  const [violationNotice, setViolationNotice] = useState<{ title: string; detail: string } | null>(null);
+  const violationNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [violations, setViolations] = useState<Array<{ type: string; description: string; timestamp: string }>>([]);
   const violationsRef = useRef<Array<{ type: string; description: string; timestamp: string }>>([]);
   const [warningCount, setWarningCount] = useState(0);
@@ -429,6 +431,15 @@ export function TakeTestContent() {
     warningCountRef.current += 1;
     setViolations(violationsRef.current);
     setWarningCount(warningCountRef.current);
+    setViolationNotice({
+      title: 'Cảnh cáo vi phạm',
+      detail: `${description}. Hệ thống đã ghi nhận và lưu lại bằng chứng màn hình.`,
+    });
+    if (violationNoticeTimerRef.current) clearTimeout(violationNoticeTimerRef.current);
+    violationNoticeTimerRef.current = setTimeout(() => {
+      setViolationNotice(null);
+      violationNoticeTimerRef.current = null;
+    }, 8000);
     scheduleAutosave();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -670,6 +681,7 @@ export function TakeTestContent() {
   useEffect(() => () => {
     stopMonitoring();
     if (autosaveRef.current) clearTimeout(autosaveRef.current);
+    if (violationNoticeTimerRef.current) clearTimeout(violationNoticeTimerRef.current);
   }, [stopMonitoring]);
 
   const setSingleAnswer = (key: string, value: string) => {
@@ -1091,6 +1103,15 @@ export function TakeTestContent() {
 
   return (
     <div className="tt-shell">
+      {violationNotice && (
+        <div className="tt-violation-banner" role="alert" aria-live="assertive">
+          <div className="tt-violation-banner-icon"><i className="fas fa-triangle-exclamation" /></div>
+          <div>
+            <strong>{violationNotice.title}</strong>
+            <p>{violationNotice.detail}</p>
+          </div>
+        </div>
+      )}
       <header className="tt-topbar">
         <div className="tt-brand"><i className="fas fa-clipboard-list" /> Take Test</div>
         <div className="tt-topbar-actions">
@@ -1114,8 +1135,8 @@ export function TakeTestContent() {
                 <div className="tt-setup-list">
                   <div><i className="fas fa-expand" /> Fullscreen is required</div>
                   <div><i className="fas fa-camera" /> Camera monitoring is required</div>
-                  <div><i className="fas fa-display" /> Entire screen sharing is required</div>
-                  <div><i className="fas fa-eye" /> Tab switches and exits are logged</div>
+                  <div><i className="fas fa-display" /> Only Entire screen sharing is accepted</div>
+                  <div><i className="fas fa-eye" /> Tab switches and exits are logged immediately</div>
                 </div>
                 <div className="tt-modal-actions">
                   <button type="button" className="tt-secondary" onClick={() => router.push('/student/assignments')} disabled={isInitializing}>Cancel</button>
@@ -1157,7 +1178,7 @@ export function TakeTestContent() {
             ) : (
               <>
                 <h2>Screen sharing required</h2>
-                <p>To continue, re-share your entire screen.</p>
+                <p>To continue, re-share your entire screen. Your violation has been logged.</p>
                 <button type="button" className="tt-primary" onClick={resumeScreenShare}>Re-share screen</button>
               </>
             )}
