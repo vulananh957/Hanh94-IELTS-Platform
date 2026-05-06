@@ -369,7 +369,7 @@
 
 /* ── Activity chart ─────────────────────────────────────────── */
 .sd-chart-wrap {
-  height: 160px;
+  height: 180px;
   display: flex;
   align-items: flex-end;
   gap: 6px;
@@ -382,7 +382,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 1px;
   height: 100%;
   justify-content: flex-end;
 }
@@ -418,7 +418,7 @@
   z-index: 10;
 }
 
-.sd-chart-day { font-size: 0.68rem; color: var(--c-subtle); margin-top: 5px; }
+.sd-chart-day { font-size: 0.68rem; color: var(--c-subtle); margin-top: 0; line-height: 1; }
 
 .sd-chart-empty {
   position: absolute;
@@ -583,23 +583,79 @@
 .sd-cal-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  gap: 2px;
+  row-gap: 8px;
+  column-gap: 0;
   text-align: center;
 }
 
 .sd-cal-dayname { font-size: 0.66rem; color: var(--c-subtle); font-weight: 600; padding: 3px 0; }
 
-.sd-cal-day {
-  font-size: 0.79rem;
-  padding: 5px 2px;
-  border-radius: 5px;
-  color: #4a5568;
-  cursor: default;
-  transition: background 0.13s;
+.sd-cal-day-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
 }
-.sd-cal-day.other-month { color: #d1d5db; }
-.sd-cal-day.today { background: var(--c-deep); color: #fff; font-weight: 700; }
-.sd-cal-day.has-activity { background: #d1fae5; color: #065f46; font-weight: 600; }
+
+.sd-cal-day-streak-bg {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  background-color: #ffedd5;
+  z-index: 1;
+}
+
+.sd-cal-day-streak-bg.connect-left {
+  left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.sd-cal-day-streak-bg.no-connect-left {
+  left: 50%;
+  border-top-left-radius: 14px;
+  border-bottom-left-radius: 14px;
+}
+.sd-cal-day-streak-bg.connect-right {
+  right: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.sd-cal-day-streak-bg.no-connect-right {
+  right: 50%;
+  border-top-right-radius: 14px;
+  border-bottom-right-radius: 14px;
+}
+
+.sd-cal-day-inner {
+  position: relative;
+  z-index: 2;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.79rem;
+  background-color: transparent;
+  color: #64748b;
+  margin: 0 auto;
+  transition: all 0.2s;
+}
+
+.sd-cal-day-inner.today {
+  border: 2px solid var(--c-deep);
+  color: var(--c-deep);
+  font-weight: 700;
+}
+
+.sd-cal-day-inner.active {
+  background-color: #fbbf24;
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 2px 4px rgba(251, 191, 36, 0.3);
+  border: none;
+}
 
 /* ── Quick Actions — full-width horizontal strip ────────────── */
 .sd-quick-actions-strip {
