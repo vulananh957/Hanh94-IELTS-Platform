@@ -27,17 +27,17 @@ function timeAgo(date: Date): string {
 
 function normalizeSkill(skill: string): 'listening' | 'reading' | 'writing' | 'default' {
   const value = skill.trim().toLowerCase();
-  if (value.includes('listening') || value.startsWith('listen') || value === 'l') return 'listening';
-  if (value.includes('reading') || value.startsWith('read') || value === 'r') return 'reading';
-  if (value.includes('writing') || value.startsWith('write') || value === 'w') return 'writing';
+  if (value === 'listening' || value === 'reading' || value === 'writing') {
+    return value;
+  }
   return 'default';
 }
 
 function skillIcon(skill: string): string {
   const normalized = normalizeSkill(skill);
   if (normalized === 'listening') return 'fas fa-headphones';
-  if (normalized === 'reading') return 'fas fa-book-open';
-  if (normalized === 'writing') return 'fas fa-pen-fancy';
+  if (normalized === 'reading') return 'fas fa-book';
+  if (normalized === 'writing') return 'fas fa-pen';
   return 'fas fa-clipboard-check';
 }
 
@@ -97,16 +97,36 @@ function MiniCalendar({ activityDates }: { activityDates: Set<string> }) {
           <div key={n} className="sd-cal-dayname">{n}</div>
         ))}
         {cells.map((cell, idx) => {
-          if (!cell.day) return <div key={`blank-${idx}`} />;
+          if (!cell.day) return <div key={`blank-${idx}`} className="sd-cal-day-wrapper" />;
+          
           const isToday = cell.dateStr === today.toDateString();
           const hasActivity = activityDates.has(cell.dateStr);
+          
+          let bgClasses = '';
+          if (hasActivity) {
+            const dt = new Date(cell.dateStr);
+            const prevDt = new Date(dt); prevDt.setDate(dt.getDate() - 1);
+            const nextDt = new Date(dt); nextDt.setDate(dt.getDate() + 1);
+            
+            const hasPrev = activityDates.has(prevDt.toDateString());
+            const hasNext = activityDates.has(nextDt.toDateString());
+            
+            if (hasPrev) bgClasses += ' connect-left';
+            else bgClasses += ' no-connect-left';
+
+            if (hasNext) bgClasses += ' connect-right';
+            else bgClasses += ' no-connect-right';
+          }
+
           return (
-            <div
-              key={cell.dateStr}
-              className={`sd-cal-day${isToday ? ' today' : hasActivity ? ' has-activity' : ''}`}
-              title={hasActivity ? 'Test completed' : undefined}
-            >
-              {cell.day}
+            <div key={cell.dateStr} className="sd-cal-day-wrapper">
+               {hasActivity && <div className={`sd-cal-day-streak-bg${bgClasses}`} />}
+               <div
+                 className={`sd-cal-day-inner ${isToday ? 'today' : ''} ${hasActivity ? 'active' : ''}`}
+                 title={hasActivity ? 'Test completed' : undefined}
+               >
+                 {hasActivity ? '🔥' : cell.day}
+               </div>
             </div>
           );
         })}
@@ -161,8 +181,8 @@ function SkillProgress({ stats }: { stats: StudentDashboardStats['skillStats'] }
     cls: string;
   }> = [
     { key: 'listening', label: 'Listening', icon: 'fas fa-headphones', cls: 'listening' },
-    { key: 'reading',   label: 'Reading',   icon: 'fas fa-book-open',  cls: 'reading'   },
-    { key: 'writing',   label: 'Writing',   icon: 'fas fa-pen-fancy',  cls: 'writing'   },
+    { key: 'reading',   label: 'Reading',   icon: 'fas fa-book',  cls: 'reading'   },
+    { key: 'writing',   label: 'Writing',   icon: 'fas fa-pen',  cls: 'writing'   },
   ];
 
   return (

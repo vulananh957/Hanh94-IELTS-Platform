@@ -45,7 +45,7 @@ export interface StudentActivity {
   id: string;
   testId: string;
   testName: string;
-  testSkill: 'listening' | 'reading' | 'writing' | string;
+  testSkill: 'listening' | 'reading' | 'writing' | 'default';
   score: number | null;
   status: string;
   date: Date;
@@ -84,26 +84,26 @@ export function invalidateStudentCache(email: string): void {
   requestMap.delete(`student_activities_${email}`);
 }
 
-// ─── Skill inference (mirrors old dashboard logic exactly) ────────────────────
+// ─── Skill resolution (database-driven) ───────────────────────────────────────
 
-/**
- * Determine IELTS skill from a testResults document.
- * Priority: testType field → infer from testName (same logic as old dashboard).
- */
-function inferSkill(result: any): 'listening' | 'reading' | 'writing' | null {
-  let testType = (result.testType ?? '').toLowerCase();
+function asSkill(value: unknown): 'listening' | 'reading' | 'writing' | null {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'listening' || normalized === 'reading' || normalized === 'writing') {
+    return normalized;
+  }
+  return null;
+}
 
-  if (!testType || testType === 'unknown') {
-    const name = (result.testName ?? result.name ?? '').toLowerCase();
-    if (name.includes('reading') || name.startsWith('r')) testType = 'reading';
-    else if (name.includes('listening') || name.startsWith('l')) testType = 'listening';
-    else if (name.includes('writing') || name.startsWith('w')) testType = 'writing';
+function resolveSkillFromDb(
+  result: Record<string, unknown>,
+  testSkillMap: Map<string, 'listening' | 'reading' | 'writing'>,
+): 'listening' | 'reading' | 'writing' | null {
+  const testId = String(result.testId ?? '').trim();
+  if (testId && testSkillMap.has(testId)) {
+    return testSkillMap.get(testId) ?? null;
   }
 
-  if (testType === 'listening') return 'listening';
-  if (testType === 'reading') return 'reading';
-  if (testType === 'writing') return 'writing';
-  return null;
+  return asSkill(result.testType) ?? asSkill(result.skill);
 }
 
 /** Extract band score from a testResults document (matches old dashboard field order). */
@@ -202,7 +202,14 @@ export async function fetchStudentDashboard(
       } catch { /* non-critical */ }
     }
 
-    // ── 3. Deduplicate testResults by testId (keep latest per test) ───────────
+    // ── 3. Build test skill map from tests collection (source of truth) ───────
+    const testSkillMap = new Map<string, 'listening' | 'reading' | 'writing'>();
+    testsSnap?.docs.forEach((d) => {
+      const skill = asSkill(d.data().skill);
+      if (skill) testSkillMap.set(d.id, skill);
+    });
+
+    // ── 4. Deduplicate testResults by testId (keep latest per test) ───────────
     // Same logic as old dashboard: group by testId, keep latest completedAt
     const latestResults = new Map<string, any>();
     resultsSnap?.docs.forEach((d) => {
@@ -215,7 +222,7 @@ export async function fetchStudentDashboard(
       }
     });
 
-    // ── 4. Aggregate skill stats from deduplicated results ────────────────────
+    // ── 5. Aggregate skill stats from deduplicated results ────────────────────
     const skillStats: StudentDashboardStats['skillStats'] = {
       listening: { average: 0, count: 0, total: 0, history: [] },
       reading:   { average: 0, count: 0, total: 0, history: [] },
@@ -225,7 +232,7 @@ export async function fetchStudentDashboard(
     const weeklyRaw: Array<{ completedAt: Date; score: number | null }> = [];
 
     for (const [, result] of latestResults) {
-      const skill = inferSkill(result);
+      const skill = resolveSkillFromDb(result, testSkillMap);
       const completedAt: Date = result._completedAt;
       // ✅ CORRECT score fields: ieltsBand || score (not scores.ieltsBand)
       const band = extractBand(result);
@@ -239,7 +246,7 @@ export async function fetchStudentDashboard(
       }
     }
 
-    // ── 5. Writing: deduplicate by testId, count graded with score > 0 ────────
+    // ── 6. Writing: deduplicate by testId, count graded with score > 0 ────────
     // ✅ CORRECT filter: status === 'graded' && writingScore > 0 (mirrors old dashboard)
     const latestWriting = new Map<string, any>();
     writingSnap?.docs.forEach((d) => {
@@ -263,7 +270,7 @@ export async function fetchStudentDashboard(
       }
     }
 
-    // ── 6. Calculate skill averages (nearest 0.5) ─────────────────────────────
+    // ── 7. Calculate skill averages (nearest 0.5) ─────────────────────────────
     for (const skill of Object.keys(skillStats) as Array<keyof typeof skillStats>) {
       const stat = skillStats[skill];
       if (stat.count > 0) {
@@ -271,7 +278,7 @@ export async function fetchStudentDashboard(
       }
     }
 
-    // ── 7. Overall band = average of per-skill averages ───────────────────────
+    // ── 8. Overall band = average of per-skill averages ───────────────────────
     const validAverages = [
       skillStats.listening.count > 0 ? skillStats.listening.average : null,
       skillStats.reading.count > 0   ? skillStats.reading.average   : null,
@@ -283,7 +290,7 @@ export async function fetchStudentDashboard(
         ? Math.round((validAverages.reduce((a, b) => a + b, 0) / validAverages.length) * 2) / 2
         : null;
 
-    // ── 8. Tests completed = unique deduplicated test results + graded writings ─
+    // ── 9. Tests completed = unique deduplicated test results + graded writings ─
     // Same counting logic as old dashboard:
     //   completedTestsFromCollection.length + completedWritings.length
     const gradedWritingCount = [...latestWriting.values()].filter(
@@ -291,7 +298,7 @@ export async function fetchStudentDashboard(
     ).length;
     const testsCompleted = latestResults.size + gradedWritingCount;
 
-    // ── 9. Available tests (class-filtered, not yet completed by this student) ─
+    // ── 10. Available tests (class-filtered, not yet completed by this student) ─
     let availableTests = 0;
     try {
       const classesSnap = await getDocs(collection(db, 'classes'));
@@ -320,7 +327,7 @@ export async function fetchStudentDashboard(
       });
     } catch { /* non-critical */ }
 
-    // ── 10. Weekly activity chart ─────────────────────────────────────────────
+    // ── 11. Weekly activity chart ─────────────────────────────────────────────
     const weeklyActivity = buildWeeklyActivity(weeklyRaw);
 
     const stats: StudentDashboardStats = {
@@ -367,7 +374,7 @@ export async function fetchStudentRecentActivity(
   const db = getFirestore(firebaseApp);
 
   const promise = (async (): Promise<StudentActivity[]> => {
-    const [resultsSnap, writingSnap] = await Promise.all([
+    const [resultsSnap, writingSnap, testsSnap] = await Promise.all([
       // ✅ CORRECT collection: testResults
       getDocs(
         query(
@@ -386,17 +393,23 @@ export async function fetchStudentRecentActivity(
           limit(10),
         ),
       ).catch(() => null),
+      getDocs(collection(db, 'tests')).catch(() => null),
     ]);
 
     const raw: StudentActivity[] = [];
+
+    const testSkillMap = new Map<string, 'listening' | 'reading' | 'writing'>();
+    testsSnap?.docs.forEach((d) => {
+      const skill = asSkill(d.data().skill);
+      if (skill) testSkillMap.set(d.id, skill);
+    });
 
     resultsSnap?.docs.forEach((d) => {
       const data = d.data();
       const completedAt: Date = data.completedAt?.toDate?.() ?? new Date(data.completedAt);
       // ✅ CORRECT score: ieltsBand || score
       const band = extractBand(data);
-      // ✅ CORRECT skill: from testType field on the result doc
-      const skill = inferSkill(data) ?? '';
+      const skill = resolveSkillFromDb(data as Record<string, unknown>, testSkillMap) ?? 'default';
       raw.push({
         id: d.id,
         testId: data.testId ?? '',
