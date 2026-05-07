@@ -6,6 +6,21 @@ import { getAuth, onAuthStateChanged, type User } from 'firebase/auth';
 import { addDoc, collection, doc, getDoc, getFirestore, serverTimestamp } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
 import './take-test.css';
+import {
+  formatSeconds,
+  normalizeSkill,
+  splitList,
+  splitAnswerTokens,
+  toLetter,
+  calculateSingleAnswerScore,
+  calculateMultipleChoiceScore,
+  calculateScore,
+  calculateIELTSBand,
+  generateQuestionResults,
+  getImageSrc,
+  getQuestionTypeImages,
+  getOptions,
+} from './take-test-utils';
 
 type Skill = 'listening' | 'reading' | 'writing' | string;
 type Answers = Record<string, string>;
@@ -86,237 +101,6 @@ const PROJECT_ID = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'hanh94esl-717
 const FUNCTIONS_BASE = `https://us-central1-${PROJECT_ID}.cloudfunctions.net`;
 const MAX_WARNINGS = 3;
 
-function formatSeconds(value: number): string {
-  const safe = Math.max(0, Math.floor(value));
-  const minutes = Math.floor(safe / 60);
-  const seconds = safe % 60;
-  return `${minutes}:${String(seconds).padStart(2, '0')}`;
-}
-
-function normalizeSkill(value: unknown): Skill {
-  const skill = String(value || '').toLowerCase();
-  if (skill.includes('listening')) return 'listening';
-  if (skill.includes('reading')) return 'reading';
-  if (skill.includes('writing')) return 'writing';
-  return skill || 'reading';
-}
-
-function splitList(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
-  return String(value || '')
-    .split(/\r?\n|[,;|]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function splitAnswerTokens(value: unknown): string[] {
-  return String(value || '')
-    .split(/[,\s;/]+/)
-    .map((choice) => choice.trim().toUpperCase())
-    .filter(Boolean);
-}
-
-function toLetter(index: number): string {
-  return String.fromCharCode(65 + index);
-}
-
-function getImageSrc(source: TestQuestionType | TestQuestion | undefined): string | null {
-  if (!source) return null;
-  if ('imageData' in source && source.imageData?.src) return source.imageData.src;
-  if ('image' in source && source.image) return source.image;
-  return null;
-}
-
-function getQuestionTypeImages(qt: TestQuestionType): string[] {
-  const urls = [getImageSrc(qt), ...(qt.questions || []).map((question) => getImageSrc(question))]
-    .filter((url): url is string => Boolean(url));
-  return Array.from(new Set(urls));
-}
-
-function getOptions(value: unknown, fallbackCount = 12): string[] {
-  const parsed = splitList(value);
-  if (parsed.length > 0) return parsed;
-  return Array.from({ length: fallbackCount }, (_, index) => toLetter(index));
-}
-
-function calculateSingleAnswerScore(userAnswer: unknown, accepted: unknown[]): number {
-  if (!String(userAnswer || '').trim()) return 0;
-
-  const userStr = String(userAnswer).trim();
-  const userLower = userStr.toLowerCase();
-
-  const isCorrect = accepted.some((item) => {
-    const acceptedStr = String(item).trim();
-    if (acceptedStr.toLowerCase() === userLower) return true;
-
-    if (acceptedStr.includes('/')) {
-      return acceptedStr.split('/').map((option) => option.trim().toLowerCase()).includes(userLower);
-    }
-
-    if (acceptedStr.includes(',') || acceptedStr.includes(';')) {
-      return acceptedStr.split(/[,;]/).map((option) => option.trim().toLowerCase()).includes(userLower);
-    }
-
-    return false;
-  });
-
-  return isCorrect ? 1 : 0;
-}
-
-function calculateMultipleChoiceScore(userAnswer: unknown, accepted: unknown[]): number {
-  const studentChoices = Array.from(new Set(splitAnswerTokens(userAnswer)));
-  const acceptedChoices = accepted.flatMap((item) => splitAnswerTokens(item));
-
-  let correctChoices = 0;
-  studentChoices.forEach((choice) => {
-    if (acceptedChoices.includes(choice)) correctChoices += 1;
-  });
-
-  return Math.min(correctChoices, acceptedChoices.length);
-}
-
-function calculateScore(userAnswer: unknown, accepted: unknown[]): number {
-  if (!String(userAnswer || '').trim()) return 0;
-
-  const isMultipleChoice = accepted.some((item) => {
-    const answer = String(item);
-    return answer.includes(',') ||
-      answer.includes(';') ||
-      answer.includes('/') ||
-      answer.includes(' ') ||
-      (answer.length > 1 && /^[A-Z\s,;/]+$/i.test(answer));
-  });
-
-  return isMultipleChoice
-    ? calculateMultipleChoiceScore(userAnswer, accepted)
-    : calculateSingleAnswerScore(userAnswer, accepted);
-}
-
-function calculateIELTSBand(correctAnswers: number, skill: Skill): number {
-  const scoreMap: Record<number, number> = {
-    39: 9.0, 40: 9.0,
-    37: 8.5, 38: 8.5,
-    35: 8.0, 36: 8.0,
-    33: 7.5, 34: 7.5,
-    30: 7.0, 31: 7.0, 32: 7.0,
-    27: 6.5, 28: 6.5, 29: 6.5,
-    23: 6.0, 24: 6.0, 25: 6.0, 26: 6.0,
-    20: 5.5, 21: 5.5, 22: 5.5,
-    16: 5.0, 17: 5.0, 18: 5.0, 19: 5.0,
-    13: 4.5, 14: 4.5, 15: 4.5,
-    10: 4.0, 11: 4.0, 12: 4.0,
-    7: 3.5, 8: 3.5, 9: 3.5,
-    5: 3.0, 6: 3.0,
-    3: 2.5, 4: 2.5,
-  };
-
-  const safeSkill = normalizeSkill(skill);
-  const _sameAcademicTableForReadingAndListening = safeSkill === 'reading' || safeSkill === 'listening';
-
-  for (let answers = correctAnswers; answers >= 0; answers -= 1) {
-    if (scoreMap[answers] !== undefined) return scoreMap[answers];
-  }
-
-  return 0;
-}
-
-function generateQuestionResults(test: TestData, answers: Answers): QuestionResult[] {
-  if (normalizeSkill(test.skill) === 'writing') {
-    const task1 = answers.writingTask1 || '';
-    const task2 = answers.writingTask2 || '';
-    const task1Words = task1.trim() ? task1.trim().split(/\s+/).length : 0;
-    const task2Words = task2.trim() ? task2.trim().split(/\s+/).length : 0;
-
-    return [
-      {
-        questionId: 'writingTask1',
-        questionDisplayName: 'Writing Task 1',
-        studentAnswer: task1 || 'No answer',
-        correctAnswer: 'Manual grading required',
-        isCorrect: task1Words >= 150,
-        score: task1Words >= 150 ? 1 : 0,
-        maxScore: 1,
-        wordCount: task1Words,
-        minRequired: 150,
-      },
-      {
-        questionId: 'writingTask2',
-        questionDisplayName: 'Writing Task 2',
-        studentAnswer: task2 || 'No answer',
-        correctAnswer: 'Manual grading required',
-        isCorrect: task2Words >= 250,
-        score: task2Words >= 250 ? 1 : 0,
-        maxScore: 1,
-        wordCount: task2Words,
-        minRequired: 250,
-      },
-    ];
-  }
-
-  const answerKey = test.answerKey || {};
-  const groupKeys = Object.keys(answers).filter((key) => key.includes('-'));
-  const processedGroups = new Set<string>();
-  const results: QuestionResult[] = [];
-
-  Object.keys(answerKey).forEach((qid) => {
-    const accepted = Array.isArray(answerKey[qid]) ? answerKey[qid] as string[] : [answerKey[qid] as string];
-    const currentQid = parseInt(qid, 10);
-
-    const shouldProcess = groupKeys.some((groupKey) => {
-      const [start] = groupKey.split('-').map(Number);
-      return currentQid === start;
-    }) || !groupKeys.some((groupKey) => {
-      const [start, end] = groupKey.split('-').map(Number);
-      return currentQid >= start && currentQid <= end;
-    });
-
-    if (!shouldProcess) return;
-
-    const isGroup = groupKeys.some((groupKey) => {
-      const [start, end] = groupKey.split('-').map(Number);
-      return currentQid >= start && currentQid <= end;
-    });
-
-    if (isGroup) {
-      const acceptedChoices = accepted.flatMap((item) => splitAnswerTokens(item));
-      const startNum = currentQid;
-      const endNum = startNum + acceptedChoices.length - 1;
-      const groupId = `${startNum}-${endNum}`;
-
-      if (processedGroups.has(groupId)) return;
-      processedGroups.add(groupId);
-
-      const studentAnswer = answers[groupId] || '';
-      const score = calculateScore(studentAnswer, accepted);
-      results.push({
-        questionId: groupId,
-        questionDisplayName: `Question ${startNum}-${endNum}`,
-        studentAnswer: studentAnswer || 'No answer',
-        correctAnswer: String(answerKey[qid]),
-        isCorrect: score >= acceptedChoices.length,
-        score,
-        maxScore: acceptedChoices.length,
-        isMultipleChoice: true,
-      });
-      return;
-    }
-
-    const studentAnswer = answers[qid] || '';
-    const score = calculateSingleAnswerScore(studentAnswer, accepted);
-    results.push({
-      questionId: qid,
-      questionDisplayName: `Question ${qid}`,
-      studentAnswer: studentAnswer || 'No answer',
-      correctAnswer: String(answerKey[qid]),
-      isCorrect: score > 0,
-      score,
-      maxScore: 1,
-    });
-  });
-
-  return results;
-}
-
 async function callFunction<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
   const auth = getAuth(firebaseApp);
   const token = await auth.currentUser?.getIdToken();
@@ -388,17 +172,16 @@ export function TakeTestContent() {
   const screenStreamRef = useRef<MediaStream | null>(null);
   const [isFullscreenPaused, setIsFullscreenPaused] = useState(false);
   const isFullscreenPausedRef = useRef(false);
-  const [violationNotice, setViolationNotice] = useState<{ title: string; detail: string } | null>(null);
-  const violationNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [violations, setViolations] = useState<Array<{ type: string; description: string; timestamp: string }>>([]);
   const violationsRef = useRef<Array<{ type: string; description: string; timestamp: string }>>([]);
   const [warningCount, setWarningCount] = useState(0);
   const warningCountRef = useRef(0);
   const [tabSwitchCount, setTabSwitchCount] = useState(0);
   const tabSwitchCountRef = useRef(0);
-  const [submitResponse, setSubmitResponse] = useState<SubmitResponse | null>(null);
-  const [questionResults, setQuestionResults] = useState<QuestionResult[]>([]);
+  // submitResponse and questionResults removed: redirect to performance page immediately after submit
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isFinished, setIsFinished] = useState(false);
+  const [isSubmitConfirmOpen, setIsSubmitConfirmOpen] = useState(false);
   const [activeWritingTask, setActiveWritingTask] = useState<1 | 2>(1);
   const [audioPlayed, setAudioPlayed] = useState<Record<number, 'idle' | 'playing' | 'ended'>>({});
   const [isInitializing, setIsInitializing] = useState(false);
@@ -409,6 +192,7 @@ export function TakeTestContent() {
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const lastTabSwitchRef = useRef(0);
   const isInitializingRef = useRef(false);
+  const isFinishedRef = useRef(false);
 
   const skill = normalizeSkill(test?.skill);
   const durationMinutes = useMemo(() => {
@@ -431,21 +215,13 @@ export function TakeTestContent() {
     warningCountRef.current += 1;
     setViolations(violationsRef.current);
     setWarningCount(warningCountRef.current);
-    setViolationNotice({
-      title: 'Cảnh cáo vi phạm',
-      detail: `${description}. Hệ thống đã ghi nhận và lưu lại bằng chứng màn hình.`,
-    });
-    if (violationNoticeTimerRef.current) clearTimeout(violationNoticeTimerRef.current);
-    violationNoticeTimerRef.current = setTimeout(() => {
-      setViolationNotice(null);
-      violationNoticeTimerRef.current = null;
-    }, 8000);
     scheduleAutosave();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const scheduleAutosave = useCallback(() => {
     if (!attemptIdRef.current) return;
+    if (isFinishedRef.current) return;
     if (autosaveRef.current) clearTimeout(autosaveRef.current);
     autosaveRef.current = setTimeout(() => {
       void callFunction('/saveAnswers', 'POST', {
@@ -681,7 +457,6 @@ export function TakeTestContent() {
   useEffect(() => () => {
     stopMonitoring();
     if (autosaveRef.current) clearTimeout(autosaveRef.current);
-    if (violationNoticeTimerRef.current) clearTimeout(violationNoticeTimerRef.current);
   }, [stopMonitoring]);
 
   const setSingleAnswer = (key: string, value: string) => {
@@ -689,7 +464,8 @@ export function TakeTestContent() {
       alert('Please re-share your entire screen before continuing.');
       return;
     }
-    updateAnswers((current) => ({ ...current, [key]: value.trim() }));
+    // Don't trim - allow spaces in answers (trim only for comparisons later)
+    updateAnswers((current) => ({ ...current, [key]: value }));
     scheduleAutosave();
   };
 
@@ -749,6 +525,12 @@ export function TakeTestContent() {
       return false;
     }
     return true;
+  };
+
+  const openSubmitConfirm = () => {
+    if (!test || !attemptIdRef.current || isSubmitting || isFinished) return;
+    if (!validateWriting(false)) return;
+    setIsSubmitConfirmOpen(true);
   };
 
   const startTest = async () => {
@@ -857,9 +639,9 @@ export function TakeTestContent() {
 
   async function submitTest(auto = false) {
     if (!test || !attemptIdRef.current || isSubmitting) return;
-    if (!auto && !confirm('Submit your test now?')) return;
     if (!validateWriting(auto)) return;
 
+    setIsSubmitConfirmOpen(false);
     setIsSubmitting(true);
     stopTimer();
 
@@ -877,16 +659,46 @@ export function TakeTestContent() {
       });
       if (skill === 'writing') await saveWritingSubmission(resp);
 
+      // generate local results for logging but don't show a modal — go straight to performance
+      // (we still compute localCorrect to populate any server-side fallbacks if needed)
       const results = generateQuestionResults(test, answersRef.current);
       const localCorrect = results.reduce((total, result) => total + result.score, 0);
-      setQuestionResults(results);
-      setSubmitResponse({
-        ...resp,
-        correctAnswers: resp.correctAnswers ?? localCorrect,
-        totalQuestions: resp.totalQuestions ?? 40,
-        ieltsBand: resp.ieltsBand ?? calculateIELTSBand(localCorrect, skill),
-      });
       stopMonitoring();
+      // Redirect to performance page showing the specific attempt when available
+      const preferredId = (resp && (resp as any).attemptId) || attemptIdRef.current || test.id;
+      const target = `/student/performance?reviewTestId=${encodeURIComponent(preferredId)}`;
+      try {
+        console.log('[take-test] navigating to performance via router.replace', target);
+        router.replace(target);
+      } catch (navErr) {
+        console.warn('[take-test] router.replace failed, falling back to location.href', navErr);
+        // fallback to full navigation
+        window.location.href = target;
+      }
+
+      // Mark finished so monitoring/overlays are disabled permanently
+      setIsFinished(true);
+      isFinishedRef.current = true;
+      // Ensure pause/fullscreen states are cleared so overlays won't show after submit
+      setIsPaused(false);
+      isPausedRef.current = false;
+      setIsFullscreenPaused(false);
+      isFullscreenPausedRef.current = false;
+      setIsStarted(false);
+      isStartedRef.current = false;
+
+      // As a secondary safety-net: if router.replace doesn't navigate (some runtime edge),
+      // force a full navigation after a brief delay so the modal cannot persist.
+      setTimeout(() => {
+        try {
+          if (typeof window !== 'undefined' && window.location.pathname.includes('/student/take-test')) {
+            console.log('[take-test] fallback: forcing full navigation to', target);
+            window.location.href = target;
+          }
+        } catch (err) {
+          /* ignore */
+        }
+      }, 600);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to submit test.');
       startTimer(remainingRef.current);
@@ -906,9 +718,80 @@ export function TakeTestContent() {
       ? `Question ${group.start}-${group.end}. ${question.question || 'Choose the correct answer'}`
       : `Question ${qNum}. ${question.question || ''}`;
 
+    const displayValue = (value: string | undefined) => {
+      if (value === undefined || value === null) return '';
+      return String(value).trim().length === 0 ? '' : value;
+    };
+
+    const getTypeSpecificList = () => {
+      if (type.includes('matching headings')) return splitList(qt.headingsList || qt.headings || []);
+      if (type.includes('matching features') || type.includes('matching information') || type.includes('matching (info/features/sentence halves)') || type.includes('pick from a list')) {
+        return splitList(qt.featuresList || qt.features || qt.options || question.options || []);
+      }
+      if (type.includes('matching sentence endings')) return splitList(qt.endingsList || qt.options || question.options || []);
+      if (type.includes('diagram') || type.includes('flow-chart') || type.includes('table') || type.includes('note completion') || type.includes('form') || type.includes('summary completion')) {
+        return splitList(qt.wordBank || question.wordBank || qt.options || question.options || []);
+      }
+      return [] as string[];
+    };
+
+    const parseWordBankOptions = () => {
+      const sources: unknown[] = [qt.wordBank, question.wordBank, question.options];
+      for (const source of sources) {
+        const options = splitList(source);
+        if (options.length > 0) return options;
+      }
+      return [] as string[];
+    };
+
+    const parseLetterOptions = (source: unknown, fallbackCount = 12) => {
+      const parsed = splitList(source);
+      if (parsed.length > 0) {
+        return parsed.map((option) => {
+          const match = String(option).match(/^([A-Z])\.\s*(.*)$/i);
+          return match
+            ? { value: match[1].toUpperCase(), label: `${match[1].toUpperCase()}. ${match[2] || ''}`.trim() }
+            : { value: option, label: option };
+        }).filter((option) => option.value && option.label);
+      }
+
+      return Array.from({ length: fallbackCount }, (_, index) => {
+        const value = toLetter(index);
+        return { value, label: value };
+      });
+    };
+
+    const parseRomanOptions = (count = 7) => {
+      // Generate roman numerals dynamically based on requested count.
+      // For values beyond the supported roman map, fall back to numeric string.
+      const toRoman = (num: number) => {
+        if (num <= 0) return String(num);
+        const map: [number, string][] = [
+          [1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'],
+          [100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'],
+          [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i'],
+        ];
+        let n = num;
+        let res = '';
+        for (const [val, sym] of map) {
+          while (n >= val) {
+            res += sym;
+            n -= val;
+          }
+        }
+        return res || String(num);
+      };
+
+      return Array.from({ length: count }, (_, index) => {
+        const roman = toRoman(index + 1);
+        const value = roman || String(index + 1);
+        return { value, label: value };
+      });
+    };
+
     if (group) {
       const selected = splitAnswerTokens(answers[`${group.start}-${group.end}`]);
-      const options = getOptions(question.options, 4);
+      const options = getOptions(qt.options || question.options, 4);
       return (
         <div className="tt-question-card" key={`group-${group.start}`}>
           <h4>{title}</h4>
@@ -936,154 +819,316 @@ export function TakeTestContent() {
       );
     }
 
+    if (type.includes('matching headings')) {
+      const headings = splitList(qt.headingsList || qt.headings || []);
+      const dropdownOptions = parseRomanOptions(qt.headingCount || headings.length || 7);
+
+      return (
+        <div className="tt-question-card" key={qNum}>
+          <h4>{title}</h4>
+          <select
+            value={answers[qNum] || ''}
+            onChange={(event) => setSingleAnswer(String(qNum), event.target.value)}
+            style={{
+              padding: '0.5rem',
+              minWidth: '100px',
+              border: '2px solid #cbd5e1',
+              borderRadius: '8px',
+              fontSize: '1rem',
+            }}
+          >
+            <option value="">Select...</option>
+            {dropdownOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      );
+    }
+
+    if (type.includes('matching features') || type.includes('matching information') || type.includes('matching (info/features/sentence halves)') || type.includes('pick from a list')) {
+      const featureCount = getTypeSpecificList().length;
+      const options = parseLetterOptions(qt.options || question.options, featureCount || qt.customOptionsCount || 12);
+
+      return (
+        <div className="tt-question-card" key={qNum}>
+          <h4>{title}</h4>
+          <select
+            value={answers[qNum] || ''}
+            onChange={(event) => setSingleAnswer(String(qNum), event.target.value)}
+            style={{
+              padding: '0.5rem',
+              minWidth: '100px',
+              border: '2px solid #cbd5e1',
+              borderRadius: '8px',
+              fontSize: '1rem',
+            }}
+          >
+            <option value="">Select...</option>
+            {options.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      );
+    }
+
+    if (type.includes('matching sentence endings')) {
+      const endings = splitList(qt.endingsList || qt.options || question.options || []);
+      const options = endings.length > 0
+        ? endings.map((ending, index) => {
+            const match = String(ending).match(/^([A-Z])\.\s*(.*)$/i);
+            if (match) return { value: match[1].toUpperCase(), label: `${match[1].toUpperCase()}. ${match[2] || ''}`.trim() };
+            return { value: toLetter(index), label: ending };
+          })
+        : parseLetterOptions([], qt.customOptionsCount || 12);
+
+      return (
+        <div className="tt-question-card" key={qNum}>
+          <h4>{title}</h4>
+          <select
+            value={answers[qNum] || ''}
+            onChange={(event) => setSingleAnswer(String(qNum), event.target.value)}
+            style={{
+              padding: '0.5rem',
+              minWidth: '100px',
+              border: '2px solid #cbd5e1',
+              borderRadius: '8px',
+              fontSize: '1rem',
+            }}
+          >
+            <option value="">Select...</option>
+            {options.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      );
+    }
+
+    // Handle diagram/form/table completion with wordbank dropdown
+    if (type.includes('diagram') || type.includes('flow-chart') || type.includes('table') || type.includes('note completion') || type.includes('form')) {
+      const dropdownOptions = parseWordBankOptions();
+
+      // If we have dropdown options, render as dropdown; otherwise, text input
+      if (dropdownOptions.length > 0) {
+        return (
+          <div className="tt-question-card" key={qNum}>
+            <h4>{title}</h4>
+            <select
+              value={answers[qNum] || ''}
+              onChange={(event) => setSingleAnswer(String(qNum), event.target.value)}
+              style={{
+                padding: '0.5rem',
+                minWidth: '200px',
+                border: '2px solid #cbd5e1',
+                borderRadius: '8px',
+                fontSize: '1rem',
+              }}
+            >
+              <option value="">Select from word bank...</option>
+              {dropdownOptions.map((option, index) => (
+                <option key={`${option}-${index}`} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
+        );
+      }
+
+      // Fallback to text input if no wordbank
+      return (
+        <div className="tt-question-card" key={qNum}>
+          <h4>{title}</h4>
+          <label className="tt-question-line wide">
+            <input
+              type="text"
+              value={displayValue(answers[qNum])}
+              onChange={(event) => setSingleAnswer(String(qNum), event.target.value)}
+              placeholder="Type your answer..."
+            />
+          </label>
+        </div>
+      );
+    }
+
+    // Handle summary completion with wordbank dropdown
+    if (type.includes('summary completion')) {
+      const dropdownOptions = parseWordBankOptions();
+
+      // If we have dropdown options, render as dropdown; otherwise, text input
+      if (dropdownOptions.length > 0) {
+        return (
+          <div className="tt-question-card" key={qNum}>
+            <h4>{title}</h4>
+            <select
+              value={answers[qNum] || ''}
+              onChange={(event) => setSingleAnswer(String(qNum), event.target.value)}
+              style={{
+                padding: '0.5rem',
+                minWidth: '200px',
+                border: '2px solid #cbd5e1',
+                borderRadius: '8px',
+                fontSize: '1rem',
+              }}
+            >
+              <option value="">Select from word bank...</option>
+              {dropdownOptions.map((option, index) => (
+                <option key={`${option}-${index}`} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
+        );
+      }
+
+      // Fallback to text input if no wordbank
+      return (
+        <div className="tt-question-card" key={qNum}>
+          <h4>{title}</h4>
+          <label className="tt-question-line wide">
+            <input
+              type="text"
+              value={displayValue(answers[qNum])}
+              onChange={(event) => setSingleAnswer(String(qNum), event.target.value)}
+              placeholder="Type your answer..."
+            />
+          </label>
+        </div>
+      );
+    }
+
     if (type.includes('multiple choice') || (type.includes('true') && type.includes('false')) || (type.includes('yes') && type.includes('no'))) {
       const options = type.includes('true') && type.includes('false')
         ? ['True', 'False', 'Not Given']
         : type.includes('yes') && type.includes('no')
           ? ['Yes', 'No', 'Not Given']
           : getOptions(question.options, 4);
-      const savesText = (type.includes('true') && type.includes('false')) || (type.includes('yes') && type.includes('no'));
 
       return (
         <div className="tt-question-card" key={qNum}>
           <h4>{title}</h4>
           <div className="tt-options">
-            {options.map((option, index) => {
-              const value = savesText ? option : toLetter(index);
-              return (
-                <label key={`${qNum}-${value}`} className="tt-option">
-                  <input
-                    type="radio"
-                    name={`q-${qNum}`}
-                    checked={answers[String(qNum)] === value}
-                    onChange={() => setSingleAnswer(String(qNum), value)}
-                  />
-                  <span>{toLetter(index)}</span>
-                  <strong>{option}</strong>
-                </label>
-              );
-            })}
+            {options.map((option, index) => (
+              <label key={option} className="tt-option">
+                <input
+                  type="radio"
+                  name={`q${qNum}`}
+                  value={option}
+                  checked={answers[qNum] === option}
+                  onChange={(event) => setSingleAnswer(String(qNum), event.target.value)}
+                />
+                <span>{toLetter(index)}</span>
+                <strong>{option}</strong>
+              </label>
+            ))}
           </div>
         </div>
       );
     }
 
-    if (type.includes('matching headings')) {
-      const count = qt.headingCount || qt.customOptionsCount || splitList(qt.headingsList || qt.headings).length || 7;
-      const numerals = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x', 'xi', 'xii', 'xiii', 'xiv', 'xv'].slice(0, count);
-      return (
-        <div className="tt-question-line" key={qNum}>
-          <label>{qNum}. Paragraph {question.paragraphLetter || toLetter(qNum - 1)}</label>
-          <select value={answers[String(qNum)] || ''} onChange={(event) => setSingleAnswer(String(qNum), event.target.value)}>
-            <option value="">Select...</option>
-            {numerals.map((item) => <option key={item} value={item}>{item}</option>)}
-          </select>
-        </div>
-      );
-    }
-
-    if (type.includes('matching') || type.includes('pick from a list')) {
-      const source = qt.endingsList || qt.options || question.options || qt.featuresList;
-      const options = getOptions(source, qt.customOptionsCount || 12);
-      return (
-        <div className="tt-question-line" key={qNum}>
-          <label>{qNum}. {question.question || ''}</label>
-          <select value={answers[String(qNum)] || ''} onChange={(event) => setSingleAnswer(String(qNum), event.target.value)}>
-            <option value="">Select...</option>
-            {options.map((option, index) => {
-              const match = option.match(/^([A-Za-z])\.?\s*(.*)$/);
-              const value = match?.[1]?.toUpperCase() || option;
-              return <option key={`${value}-${index}`} value={value}>{option}</option>;
-            })}
-          </select>
-        </div>
-      );
-    }
-
-    const wordBank = getOptions(question.options || question.wordBank || qt.wordBank, 0);
-    if (wordBank.length > 0) {
-      return (
-        <div className="tt-question-line wide" key={qNum}>
-          <label>{title}</label>
-          <select value={answers[String(qNum)] || ''} onChange={(event) => setSingleAnswer(String(qNum), event.target.value)}>
-            <option value="">Select from word bank...</option>
-            {wordBank.map((option) => <option key={option} value={option}>{option}</option>)}
-          </select>
-        </div>
-      );
-    }
-
     return (
-      <div className="tt-question-line wide" key={qNum}>
-        <label>{title}</label>
-        <input value={answers[String(qNum)] || ''} onChange={(event) => setSingleAnswer(String(qNum), event.target.value)} placeholder="Your answer" />
+      <div className="tt-question-card" key={qNum}>
+        <h4>{title}</h4>
+        <label className="tt-question-line wide">
+          <input
+            type="text"
+            value={displayValue(answers[qNum])}
+            onChange={(event) => setSingleAnswer(String(qNum), event.target.value)}
+            placeholder="Type your answer..."
+          />
+        </label>
       </div>
     );
   };
 
   const questionBlocks = useMemo(() => {
-    if (!test || skill === 'writing') return null;
+    if (!test || !test.metadata?.parts) return null;
+
     let currentNumber = 1;
 
-    return (test.metadata?.parts || []).map((part, partIndex) => (
-      <section className="tt-section" key={`${part.name || 'part'}-${partIndex}`}>
-        <h3>{part.name || `Part ${partIndex + 1}`}</h3>
-        {(part.questionTypes || []).map((qt, qtIndex) => {
-          const type = String(qt.type || '');
-          const lowerType = type.toLowerCase();
-          const questions = qt.questions || [];
-          const count = Number(qt.questionCount || questions.length || 0);
-          const images = getQuestionTypeImages(qt);
-          const preludeItems = splitList(qt.headingsList || qt.headings || qt.featuresList || qt.features || qt.endingsList);
-          const renderedQuestions = [];
-
-          if (lowerType.includes('multiple') && lowerType.includes('choose multiple')) {
-            for (let index = 0; index < count; index += 1) {
-              const question = questions[index] || {};
-              const requiredCount = Number(question.choiceCount || 3);
-              const start = currentNumber;
-              const end = start + requiredCount - 1;
-              renderedQuestions.push(renderQuestionInput(qt, question, start, { start, end, requiredCount }));
-              currentNumber = end + 1;
-            }
-          } else {
-            for (let index = 0; index < count; index += 1) {
-              const question = questions[index] || {};
-              const qNum = currentNumber;
-              renderedQuestions.push(renderQuestionInput(qt, question, qNum));
-              currentNumber += 1;
-            }
-          }
+    return (
+      <section>
+        {test.metadata.parts.map((part, partIndex) => {
+          const questionTypes = part.questionTypes || [];
 
           return (
-            <div className="tt-question-set" key={`${type}-${qtIndex}`}>
-              <div className="tt-set-header">
-                <span>{type || 'Question Set'}</span>
-                {qt.instructions && <p>{qt.instructions}</p>}
-              </div>
-              {images.length > 0 && (
-                <div className="tt-set-images">
-                  {images.map((url, index) => (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img key={url} src={url} alt={`Question reference ${index + 1}`} />
-                  ))}
-                </div>
-              )}
-              {preludeItems.length > 0 && (
-                <div className="tt-prelude-list">
-                  {preludeItems.map((item, index) => <div key={`${item}-${index}`}>{item}</div>)}
-                </div>
-              )}
-              {qt.summaryText && <div className="tt-summary-text">{qt.summaryText}</div>}
-              <div className="tt-question-list">{renderedQuestions}</div>
+            <div key={`part-${partIndex}`} className="tt-section">
+              <h3>{part.name || `Part ${partIndex + 1}`}</h3>
+              {questionTypes.map((qt, qtIndex) => {
+                const type = String(qt.type || '').toLowerCase();
+                const images = getQuestionTypeImages(qt);
+                const questions = qt.questions || [];
+                const count = qt.questionCount || questions.length || 0;
+                const preludeItems = type.includes('matching headings')
+                  ? splitList(qt.headingsList || qt.headings || [])
+                  : type.includes('matching features') || type.includes('matching information') || type.includes('matching (info/features/sentence halves)') || type.includes('pick from a list')
+                    ? splitList(qt.featuresList || qt.features || qt.options || [])
+                    : type.includes('matching sentence endings')
+                      ? splitList(qt.endingsList || qt.options || [])
+                      : type.includes('diagram') || type.includes('flow-chart') || type.includes('table') || type.includes('note completion') || type.includes('form') || type.includes('summary completion')
+                        ? splitList(qt.wordBank || qt.options || [])
+                        : [];
+                const renderedQuestions = [];
+
+                if (type.includes('multiple') && type.includes('choose multiple')) {
+                  for (let index = 0; index < count; index += 1) {
+                    const question = questions[index] || {};
+                    const requiredCount = Number(question.choiceCount || 3);
+                    const start = currentNumber;
+                    const end = start + requiredCount - 1;
+                    renderedQuestions.push(renderQuestionInput(qt, question, start, { start, end, requiredCount }));
+                    currentNumber = end + 1;
+                  }
+                } else {
+                  for (let index = 0; index < count; index += 1) {
+                    const question = questions[index] || {};
+                    const qNum = currentNumber;
+                    renderedQuestions.push(renderQuestionInput(qt, question, qNum));
+                    currentNumber += 1;
+                  }
+                }
+
+                return (
+                  <div className="tt-question-set" key={`${type}-${qtIndex}`}>
+                    <div className="tt-set-header">
+                      <span>{type || 'Question Set'}</span>
+                      {qt.instructions && <p>{qt.instructions}</p>}
+                    </div>
+                    {images.length > 0 && (
+                      <div className="tt-set-images">
+                        {images.map((url, index) => (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img key={url} src={url} alt={`Question reference ${index + 1}`} />
+                        ))}
+                      </div>
+                    )}
+                    {preludeItems.length > 0 && (
+                      <div className="tt-prelude-list">
+                        {preludeItems.map((item, idx) => <div key={`${item}-${idx}`}>{item}</div>)}
+                      </div>
+                    )}
+                    {qt.summaryText && <div className="tt-summary-text">{qt.summaryText}</div>}
+                    <div className="tt-question-list">{renderedQuestions}</div>
+                  </div>
+                );
+              })}
             </div>
           );
         })}
       </section>
-    ));
-  // renderQuestionInput closes over the current answers and answer setters by design.
+    );
+  // renderQuestionInput closes over answers and answer setters by design.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [answers, skill, test]);
+  }, [answers, test]);
 
   const task1Words = (answers.writingTask1 || '').trim() ? (answers.writingTask1 || '').trim().split(/\s+/).length : 0;
   const task2Words = (answers.writingTask2 || '').trim() ? (answers.writingTask2 || '').trim().split(/\s+/).length : 0;
@@ -1103,27 +1148,18 @@ export function TakeTestContent() {
 
   return (
     <div className="tt-shell">
-      {violationNotice && (
-        <div className="tt-violation-banner" role="alert" aria-live="assertive">
-          <div className="tt-violation-banner-icon"><i className="fas fa-triangle-exclamation" /></div>
-          <div>
-            <strong>{violationNotice.title}</strong>
-            <p>{violationNotice.detail}</p>
-          </div>
-        </div>
-      )}
       <header className="tt-topbar">
         <div className="tt-brand"><i className="fas fa-clipboard-list" /> Take Test</div>
         <div className="tt-topbar-actions">
           <span className="tt-warning" title="Anti-cheat violations detected"><i className="fas fa-shield-halved" /> {violations.length}</span>
           <span className={`tt-timer${remainingSeconds < 300 && remainingSeconds > 0 ? ' urgent' : ''}`} aria-live="polite" aria-label={`Time remaining: ${formatSeconds(remainingSeconds)}`}><i className="fas fa-clock" /> {formatSeconds(remainingSeconds)}</span>
-          <button type="button" className="tt-submit" disabled={!isStarted || isSubmitting} onClick={() => submitTest(false)}>
+          <button type="button" className="tt-submit" disabled={!isStarted || isSubmitting || isFinished} onClick={openSubmitConfirm}>
             {isSubmitting ? 'Submitting...' : 'Submit'}
           </button>
         </div>
       </header>
 
-      {!isStarted && !submitResponse && (
+      {!isStarted && (
         <div className="tt-start-overlay">
           <div className="tt-start-modal">
             {!isMonitoringReady ? (
@@ -1135,8 +1171,8 @@ export function TakeTestContent() {
                 <div className="tt-setup-list">
                   <div><i className="fas fa-expand" /> Fullscreen is required</div>
                   <div><i className="fas fa-camera" /> Camera monitoring is required</div>
-                  <div><i className="fas fa-display" /> Only Entire screen sharing is accepted</div>
-                  <div><i className="fas fa-eye" /> Tab switches and exits are logged immediately</div>
+                  <div><i className="fas fa-display" /> Entire screen sharing is required</div>
+                  <div><i className="fas fa-eye" /> Tab switches and exits are logged</div>
                 </div>
                 <div className="tt-modal-actions">
                   <button type="button" className="tt-secondary" onClick={() => router.push('/student/assignments')} disabled={isInitializing}>Cancel</button>
@@ -1147,7 +1183,7 @@ export function TakeTestContent() {
               </>
             ) : (
               <>
-                <div className="tt-start-icon"><i className="fas fa-check-circle" style={{ color: '#10b981' }} /></div>
+                <div className="tt-start-icon"><i className="fas fa-check-circle" style={{ color: '#fff' }} /></div>
                 <h1>Monitoring Confirmed</h1>
                 <p>All monitoring systems are active and running.</p>
                 <div className="tt-setup-list">
@@ -1166,7 +1202,7 @@ export function TakeTestContent() {
         </div>
       )}
 
-      {isPaused && (
+        {isPaused && !isFinished && (
         <div className="tt-pause-overlay">
           <div>
             {isFullscreenPaused ? (
@@ -1178,7 +1214,7 @@ export function TakeTestContent() {
             ) : (
               <>
                 <h2>Screen sharing required</h2>
-                <p>To continue, re-share your entire screen. Your violation has been logged.</p>
+                <p>To continue, re-share your entire screen.</p>
                 <button type="button" className="tt-primary" onClick={resumeScreenShare}>Re-share screen</button>
               </>
             )}
@@ -1186,121 +1222,117 @@ export function TakeTestContent() {
         </div>
       )}
 
-      <main className="tt-workspace">
-        <aside className="tt-media-panel">
-          {skill === 'reading' && test.files?.reading?.[0] && <MediaPreview url={test.files.reading[0]} label="Reading Passage" />}
-          {skill === 'listening' && [1, 2, 3, 4].map((part) => {
-            const url = test.files?.[`listeningPart${part}`]?.[0];
-            if (!url) return null;
-            const status = audioPlayed[part - 1] || 'idle';
-            return (
-              <div className="tt-audio-card" key={part}>
-                <h3>Audio Part {part}</h3>
-                <audio
-                  id={`tt-audio-${part - 1}`}
-                  preload="auto"
-                  src={url}
-                  onEnded={() => setAudioPlayed((current) => ({ ...current, [part - 1]: 'ended' }))}
-                />
-                <button type="button" disabled={status !== 'idle'} onClick={() => playAudio(part - 1)} aria-label={`Play audio part ${part}`}>
-                  <i className="fas fa-play" /> {status === 'idle' ? 'Play' : status === 'playing' ? 'Playing...' : 'Played'}
-                </button>
-                <span>{status === 'idle' ? 'Click Play to start listening' : status === 'playing' ? 'Playing... Cannot pause or replay' : 'Audio has ended. Cannot replay.'}</span>
-              </div>
-            );
-          })}
-          {skill === 'writing' && (
-            <>
-              <div className="tt-writing-tabs">
-                <button type="button" className={activeWritingTask === 1 ? 'active' : ''} onClick={() => setActiveWritingTask(1)}>Task 1</button>
-                <button type="button" className={activeWritingTask === 2 ? 'active' : ''} onClick={() => setActiveWritingTask(2)}>Task 2</button>
-              </div>
-              {activeWritingTask === 1 && (test.files?.writingTask1?.[0] || test.files?.writingTasks?.[0]) && (
-                <MediaPreview url={(test.files?.writingTask1?.[0] || test.files?.writingTasks?.[0]) as string} label="Writing Task 1" />
-              )}
-              {activeWritingTask === 2 && (test.files?.writingTask2?.[0] || test.files?.writingTasks?.[0]) && (
-                <MediaPreview url={(test.files?.writingTask2?.[0] || test.files?.writingTasks?.[0]) as string} label="Writing Task 2" />
-              )}
-            </>
-          )}
-        </aside>
-
-        <section className="tt-question-panel">
-          <div className="tt-test-title">
-            <h2>{test.name || 'IELTS Test'}</h2>
-            <span>{skill}</span>
-          </div>
-
-          {skill === 'writing' ? (
-            <div className="tt-writing-answer">
-              <div className={activeWritingTask === 1 ? 'active' : ''}>
-                <h3>Writing Task 1</h3>
-                <p>Write at least 150 words.</p>
-                <textarea
-                  value={answers.writingTask1 || ''}
-                  onChange={(event) => {
-                    updateAnswers((current) => ({ ...current, writingTask1: event.target.value }));
-                    scheduleAutosave();
-                  }}
-                  placeholder="Write your Task 1 response here..."
-                />
-                <span>Word count: {task1Words} / 150 minimum</span>
-              </div>
-              <div className={activeWritingTask === 2 ? 'active' : ''}>
-                <h3>Writing Task 2</h3>
-                <p>Write at least 250 words.</p>
-                <textarea
-                  value={answers.writingTask2 || ''}
-                  onChange={(event) => {
-                    updateAnswers((current) => ({ ...current, writingTask2: event.target.value }));
-                    scheduleAutosave();
-                  }}
-                  placeholder="Write your Task 2 response here..."
-                />
-                <span>Word count: {task2Words} / 250 minimum</span>
-              </div>
+      {isSubmitConfirmOpen && !isFinished && (
+        <div className="tt-submit-confirm-overlay" role="dialog" aria-modal="true" aria-labelledby="tt-submit-confirm-title">
+          <div className="tt-submit-confirm-modal">
+            <h2 id="tt-submit-confirm-title">Submit your test now?</h2>
+            <p>This will finalize your answers and take you to Performance.</p>
+            <div className="tt-submit-confirm-actions">
+              <button type="button" className="tt-secondary" onClick={() => setIsSubmitConfirmOpen(false)} disabled={isSubmitting}>
+                Cancel
+              </button>
+              <button type="button" className="tt-primary" onClick={() => void submitTest(false)} disabled={isSubmitting}>
+                Confirm Submit
+              </button>
             </div>
-          ) : questionBlocks}
-        </section>
+          </div>
+        </div>
+      )}
+
+      <main className="tt-workspace">
+        {!isStarted ? (
+          <div className="tt-workspace-locked" aria-hidden="true">
+            <div className="tt-workspace-locked-card">
+              <h2>Test is preparing</h2>
+              <p>Please complete setup and click Begin Test to reveal the material.</p>
+            </div>
+          </div>
+        ) : (
+          <>
+            <aside className="tt-media-panel">
+              {skill === 'reading' && Array.isArray(test.files?.reading) && test.files.reading.map((url, index) => (
+                <MediaPreview key={`${url}-${index}`} url={url} label={`Reading Passage ${index + 1}`} />
+              ))}
+              {skill === 'listening' && [1, 2, 3, 4].map((part) => {
+                const url = test.files?.[`listeningPart${part}`]?.[0];
+                if (!url) return null;
+                const status = audioPlayed[part - 1] || 'idle';
+                return (
+                  <div className="tt-audio-card" key={part}>
+                    <h3>Audio Part {part}</h3>
+                    <audio
+                      id={`tt-audio-${part - 1}`}
+                      preload="auto"
+                      src={url}
+                      onEnded={() => setAudioPlayed((current) => ({ ...current, [part - 1]: 'ended' }))}
+                    />
+                    <button type="button" disabled={status !== 'idle'} onClick={() => playAudio(part - 1)} aria-label={`Play audio part ${part}`}>
+                      <i className="fas fa-play" /> {status === 'idle' ? 'Play' : status === 'playing' ? 'Playing...' : 'Played'}
+                    </button>
+                    <span>{status === 'idle' ? 'Click Play to start listening' : status === 'playing' ? 'Playing... Cannot pause or replay' : 'Audio has ended. Cannot replay.'}</span>
+                  </div>
+                );
+              })}
+              {skill === 'writing' && (
+                <>
+                  <div className="tt-writing-tabs">
+                    <button type="button" className={activeWritingTask === 1 ? 'active' : ''} onClick={() => setActiveWritingTask(1)}>Task 1</button>
+                    <button type="button" className={activeWritingTask === 2 ? 'active' : ''} onClick={() => setActiveWritingTask(2)}>Task 2</button>
+                  </div>
+                  {activeWritingTask === 1 && (test.files?.writingTask1?.[0] || test.files?.writingTasks?.[0]) && (
+                    <MediaPreview url={(test.files?.writingTask1?.[0] || test.files?.writingTasks?.[0]) as string} label="Writing Task 1" />
+                  )}
+                  {activeWritingTask === 2 && (test.files?.writingTask2?.[0] || test.files?.writingTasks?.[0]) && (
+                    <MediaPreview url={(test.files?.writingTask2?.[0] || test.files?.writingTasks?.[0]) as string} label="Writing Task 2" />
+                  )}
+                </>
+              )}
+            </aside>
+
+            <section className="tt-question-panel">
+              <div className="tt-test-title">
+                <h2>{test.name || 'IELTS Test'}</h2>
+                <span>{skill}</span>
+              </div>
+
+              {skill === 'writing' ? (
+                <div className="tt-writing-answer">
+                  <div className={activeWritingTask === 1 ? 'active' : ''}>
+                    <h3>Writing Task 1</h3>
+                    <p>Write at least 150 words.</p>
+                    <textarea
+                      value={answers.writingTask1 || ''}
+                      onChange={(event) => {
+                        updateAnswers((current) => ({ ...current, writingTask1: event.target.value }));
+                        scheduleAutosave();
+                      }}
+                      placeholder="Write your Task 1 response here..."
+                    />
+                    <span>Word count: {task1Words} / 150 minimum</span>
+                  </div>
+                  <div className={activeWritingTask === 2 ? 'active' : ''}>
+                    <h3>Writing Task 2</h3>
+                    <p>Write at least 250 words.</p>
+                    <textarea
+                      value={answers.writingTask2 || ''}
+                      onChange={(event) => {
+                        updateAnswers((current) => ({ ...current, writingTask2: event.target.value }));
+                        scheduleAutosave();
+                      }}
+                      placeholder="Write your Task 2 response here..."
+                    />
+                    <span>Word count: {task2Words} / 250 minimum</span>
+                  </div>
+                </div>
+              ) : questionBlocks}
+            </section>
+          </>
+        )}
       </main>
 
       <div className="tt-camera">
         <video ref={cameraVideoRef} autoPlay muted playsInline aria-label="Camera monitoring feed" />
       </div>
-
-      {submitResponse && (
-        <div className="tt-results-overlay">
-          <div className="tt-results-modal">
-            <div className="tt-results-header">
-              <h2>{skill === 'writing' ? 'Writing Submitted' : 'Test Completed'}</h2>
-              <button type="button" onClick={() => router.push('/student/performance')} aria-label="Close results"><i className="fas fa-times" /></button>
-            </div>
-            {skill !== 'writing' ? (
-              <div className="tt-result-stats">
-                <div><strong>{submitResponse.correctAnswers ?? 0}/40</strong><span>Correct</span></div>
-                <div><strong>{Math.round(((submitResponse.correctAnswers ?? 0) / 40) * 100)}%</strong><span>Score</span></div>
-                <div><strong>{submitResponse.ieltsBand ?? 0}</strong><span>Band</span></div>
-              </div>
-            ) : (
-              <p className="tt-writing-submitted">Your writing response has been sent for teacher grading.</p>
-            )}
-            <div className="tt-result-list">
-              {questionResults.map((result) => (
-                <div key={result.questionId} className={`tt-result-row ${result.isCorrect ? 'correct' : 'incorrect'}`}>
-                  <div>
-                    <strong>{result.questionDisplayName}</strong>
-                    {result.isMultipleChoice && <span>{result.score}/{result.maxScore} points</span>}
-                    {result.wordCount !== undefined && <span>{result.wordCount}/{result.minRequired} words</span>}
-                  </div>
-                  <p>Your answer: {result.studentAnswer}</p>
-                  <p>Correct answer: {result.correctAnswer}</p>
-                </div>
-              ))}
-            </div>
-            <button type="button" className="tt-primary full" onClick={() => router.push('/student/performance')}>Go to performance</button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

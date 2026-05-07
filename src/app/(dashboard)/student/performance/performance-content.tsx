@@ -232,12 +232,34 @@ export function PerformanceContent() {
     if (!reviewTestId || deepLinkHandled.current) return;
     if (objLoading || writingLoading) return;
 
+    // First, check if the provided id matches an objective attempt id directly
+    const exactObjectiveById = objTests.find((r) => r.id === reviewTestId);
+    if (exactObjectiveById) {
+      const idx = objTests.findIndex((r) => r.id === reviewTestId);
+      setActiveTab('objective');
+      setObjPage(Math.floor(idx / ITEMS_PER_PAGE));
+      setSelectedObjTest(exactObjectiveById);
+      setObjDrawerIdx(idx + 1);
+      deepLinkHandled.current = true;
+      return;
+    }
+
     const [objectiveMatch, objectiveMatchIdx] = pickLatestObjectiveMatch(objTests, reviewTestId);
     if (objectiveMatch) {
       setActiveTab('objective');
       setObjPage(Math.floor(objectiveMatchIdx / ITEMS_PER_PAGE));
       setSelectedObjTest(objectiveMatch);
       setObjDrawerIdx(objectiveMatchIdx + 1);
+      deepLinkHandled.current = true;
+      return;
+    }
+
+    if (objTests.length > 0) {
+      const fallbackObjective = objTests[0];
+      setActiveTab('objective');
+      setObjPage(0);
+      setSelectedObjTest(fallbackObjective);
+      setObjDrawerIdx(1);
       deepLinkHandled.current = true;
       return;
     }
