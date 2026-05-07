@@ -100,6 +100,25 @@ export function toLetter(index: number): string {
   return String.fromCharCode(65 + index);
 }
 
+export function getImageSrc(source: any): string | null {
+  if (!source) return null;
+  if ('imageData' in source && source.imageData?.src) return source.imageData.src;
+  if ('image' in source && source.image) return source.image;
+  return null;
+}
+
+export function getQuestionTypeImages(qt: any): string[] {
+  const urls = [getImageSrc(qt), ...(qt.questions || []).map((question: any) => getImageSrc(question))]
+    .filter((url: string | null): url is string => Boolean(url));
+  return Array.from(new Set(urls));
+}
+
+export function getOptions(value: unknown, fallbackCount = 12): string[] {
+  const parsed = splitList(value);
+  if (parsed.length > 0) return parsed;
+  return Array.from({ length: fallbackCount }, (_, index) => toLetter(index));
+}
+
 /* ── Scoring helpers ──────────────────────────────────────────────── */
 
 export function calculateSingleAnswerScore(userAnswer: unknown, accepted: unknown[]): number {

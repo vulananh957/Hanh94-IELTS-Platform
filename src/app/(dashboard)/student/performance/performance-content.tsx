@@ -36,6 +36,16 @@ function skillIconClass(skill: 'listening' | 'reading') {
   return skill === 'listening' ? 'fas fa-headphones' : 'fas fa-book-open';
 }
 
+function pickLatestObjectiveMatch(results: ObjectiveTestResult[], testId: string): [ObjectiveTestResult | null, number] {
+  const matches = results
+    .map((result, index) => ({ result, index }))
+    .filter(({ result }) => result.testId === testId)
+    .sort((a, b) => b.result.completedAt.getTime() - a.result.completedAt.getTime());
+
+  if (matches.length === 0) return [null, -1];
+  return [matches[0].result, matches[0].index];
+}
+
 // ── Component ──────────────────────────────────────────────────────────────────
 
 type Tab = 'objective' | 'feedback';
@@ -222,9 +232,8 @@ export function PerformanceContent() {
     if (!reviewTestId || deepLinkHandled.current) return;
     if (objLoading || writingLoading) return;
 
-    const objectiveMatchIdx = objTests.findIndex((test) => test.testId === reviewTestId);
-    if (objectiveMatchIdx >= 0) {
-      const objectiveMatch = objTests[objectiveMatchIdx];
+    const [objectiveMatch, objectiveMatchIdx] = pickLatestObjectiveMatch(objTests, reviewTestId);
+    if (objectiveMatch) {
       setActiveTab('objective');
       setObjPage(Math.floor(objectiveMatchIdx / ITEMS_PER_PAGE));
       setSelectedObjTest(objectiveMatch);
@@ -483,18 +492,14 @@ export function PerformanceContent() {
                   <>
                     <div className="perf-filters">
                       <input
-                        id="wr-search"
                         type="text"
                         className="perf-filter-input"
                         placeholder="Search tests..."
-                        aria-label="Search writing tests"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                       />
                       <select
-                        id="wr-status-filter"
                         className="perf-filter-select"
-                        aria-label="Filter by grading status"
                         value={statusFilter}
                         onChange={(e) => setStatusFilter(e.target.value as any)}
                       >
@@ -503,9 +508,7 @@ export function PerformanceContent() {
                         <option value="pending">Pending</option>
                       </select>
                       <select
-                        id="wr-time-filter"
                         className="perf-filter-select"
-                        aria-label="Filter by time period"
                         value={timeFilter}
                         onChange={(e) => setTimeFilter(e.target.value as any)}
                       >

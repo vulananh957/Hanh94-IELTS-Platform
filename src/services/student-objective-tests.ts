@@ -21,6 +21,26 @@ export interface ObjectiveTestResult {
   totalQuestions?: number;
 }
 
+function normalizeKeyPart(value: unknown): string {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+function buildResultGroupKey(data: Record<string, unknown>, skill: 'listening' | 'reading'): string {
+  const explicitTestId = normalizeKeyPart(data.testId);
+  if (explicitTestId) return `test:${explicitTestId}`;
+
+  const testName = normalizeKeyPart(data.testName ?? data.name);
+  if (testName) return `name:${skill}:${testName}`;
+
+  const legacyId = normalizeKeyPart(data.examId ?? data.assignmentId);
+  if (legacyId) return `legacy:${legacyId}`;
+
+  return `fallback:${skill}:unknown`;
+}
+
 function inferSkill(result: any): 'listening' | 'reading' | null {
   let testType = (result.testType ?? '').toLowerCase();
   if (!testType || testType === 'unknown') {
@@ -48,6 +68,7 @@ export async function fetchStudentObjectiveTests(
     );
 
     const results: ObjectiveTestResult[] = [];
+    const groupKeyByDocId = new Map<string, string>();
 
     snap.docs.forEach((d) => {
       const data = d.data();
@@ -57,10 +78,11 @@ export async function fetchStudentObjectiveTests(
       const completedAt: Date =
         data.completedAt?.toDate?.() ?? new Date(data.completedAt);
       const band = Number(data.ieltsBand ?? data.score ?? 0) || null;
+      const groupKey = buildResultGroupKey(data as Record<string, unknown>, skill);
 
       results.push({
         id: d.id,
-        testId: data.testId ?? d.id,
+        testId: String(data.testId ?? groupKey),
         testName: data.testName ?? data.name ?? 'Test',
         skill,
         band: band && band > 0 ? band : null,
@@ -69,14 +91,16 @@ export async function fetchStudentObjectiveTests(
         correctAnswers: data.correctAnswers ?? data.correct ?? undefined,
         totalQuestions: data.totalQuestions ?? data.total ?? undefined,
       });
+      groupKeyByDocId.set(d.id, groupKey);
     });
 
     // Deduplicate: keep latest attempt per testId
     const latestMap = new Map<string, ObjectiveTestResult>();
     results.forEach((r) => {
-      const existing = latestMap.get(r.testId);
+      const groupKey = groupKeyByDocId.get(r.id) ?? normalizeKeyPart(r.testId) ?? r.id;
+      const existing = latestMap.get(groupKey);
       if (!existing || r.completedAt > existing.completedAt) {
-        latestMap.set(r.testId, r);
+        latestMap.set(groupKey, r);
       }
     });
 

@@ -2,6 +2,9 @@
   "name": "ai-studio-applet",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "22"
+  },
   "scripts": {
     "dev": "NEXT_DISABLE_DEVTOOLS=1 next dev -p 3000",
     "dev:stable": "NEXT_DISABLE_DEVTOOLS=1 DISABLE_HMR=true next dev -p 3000",

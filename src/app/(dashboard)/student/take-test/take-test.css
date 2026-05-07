@@ -24,6 +24,16 @@
   align-items: center;
 }
 
+.tt-build-marker {
+  margin-left: 1rem;
+  font-size: 0.78rem;
+  color: rgba(255,255,255,0.95);
+  background: rgba(0,0,0,0.1);
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  font-weight: 700;
+}
+
 .tt-brand {
   gap: 0.55rem;
   font-size: 1.35rem;
@@ -416,24 +426,30 @@
 }
 
 .tt-start-overlay,
-.tt-pause-overlay,
-.tt-results-overlay {
+.tt-pause-overlay {
   position: fixed;
   inset: 0;
   z-index: 3000;
   display: grid;
   place-items: center;
   padding: 1.5rem;
-  background: rgba(2, 6, 23, 0.74);
+  background:
+    radial-gradient(circle at top left, rgba(64, 165, 120, 0.22), transparent 32%),
+    radial-gradient(circle at bottom right, rgba(0, 103, 105, 0.24), transparent 36%),
+    rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(10px);
 }
 
 .tt-start-modal,
-.tt-pause-overlay > div,
-.tt-results-modal {
-  width: min(520px, 100%);
-  border-radius: 18px;
+.tt-pause-overlay > div {
+  border-radius: 24px;
   background: #fff;
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+}
+
+.tt-start-modal,
+.tt-pause-overlay > div {
+  width: min(520px, 100%);
 }
 
 .tt-start-modal,
@@ -489,93 +505,8 @@
   gap: 0.75rem;
 }
 
-.tt-results-modal {
-  max-height: 88vh;
-  overflow: auto;
-  padding: 1.2rem;
-}
-
-.tt-results-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
-}
-
-.tt-results-header h2 {
-  margin: 0;
-  color: #006769;
-}
-
-.tt-results-header button {
-  border: none;
-  background: #f1f5f9;
-  width: 38px;
-  height: 38px;
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.tt-result-stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.75rem;
-  margin: 1rem 0;
-}
-
-.tt-result-stats div {
-  display: grid;
-  gap: 0.25rem;
-  padding: 1rem;
-  border-radius: 12px;
-  background: #f8fafc;
-  text-align: center;
-}
-
-.tt-result-stats strong {
-  color: #006769;
-  font-size: 1.35rem;
-}
-
-.tt-result-stats span,
-.tt-result-row span {
-  color: #64748b;
-  font-weight: 800;
-}
-
-.tt-result-list {
-  display: grid;
-  gap: 0.7rem;
-  margin: 1rem 0;
-}
-
-.tt-result-row {
-  padding: 0.85rem;
-  border-radius: 12px;
-  border-left: 4px solid #ef4444;
-  background: #fef2f2;
-}
-
-.tt-result-row.correct {
-  border-left-color: #10b981;
-  background: #ecfdf5;
-}
-
-.tt-result-row div {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.tt-result-row p,
-.tt-writing-submitted {
-  margin: 0.4rem 0 0;
-  color: #475569;
-}
-
-.tt-primary.full {
-  width: 100%;
-}
+/* Results modal styles removed to prevent stale modal UI from appearing.
+   If any legacy modal markup exists, it will render without these styles. */
 
 .tt-loading {
   min-height: 100vh;
@@ -586,7 +517,6 @@
   color: #006769;
   font-weight: 900;
 }
-
 @media (max-width: 980px) {
   .tt-topbar {
     height: auto;
@@ -607,6 +537,8 @@
   .tt-camera {
     width: 220px;
   }
+
+  /* Results-specific responsive rules removed to avoid stale modal UI */
 }
 
 @media (max-width: 640px) {
@@ -618,7 +550,9 @@
     grid-template-columns: 1fr;
   }
 
-  .tt-result-stats {
+  /* Results modal styles removed */
+
+  .tt-result-answer-grid {
     grid-template-columns: 1fr;
   }
 

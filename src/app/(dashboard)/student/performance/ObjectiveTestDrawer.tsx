@@ -8,15 +8,22 @@ import type { ObjectiveTestResult } from '@/services/student-objective-tests';
 /* ── types ─────────────────────────────────────────────────────── */
 interface AnswerRow {
   qNum: string;
+  qLabel: string;
   studentAnswer: string;
   correctAnswer: string;
   isCorrect: boolean;
+  score: number;
+  maxScore: number;
 }
 
 interface Section {
   title: string;
-  type: string;
   rows: AnswerRow[];
+  blocks: {
+    type: string;
+    subtitle?: string;
+    rows: AnswerRow[];
+  }[];
 }
 
 interface TestMaterial {
@@ -57,13 +64,57 @@ function txt(v: unknown, fb = ''): string {
   return fb;
 }
 
+function toPositiveInt(value: unknown, fallback: number): number {
+  const next = Number(value);
+  if (!Number.isFinite(next)) return fallback;
+  return next > 0 ? Math.floor(next) : fallback;
+}
+
 function normalize(s: string): string {
   return s.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-function matchAnswer(student: string, correct: string): boolean {
+function formatQuestionLabel(start: number, end: number): string {
+  return start === end ? String(start) : `${start}–${end}`;
+}
+
+function splitAnswerTokens(value: string): string[] {
+  return value
+    .split(/[\s,;/]+/)
+    .map((choice) => choice.trim().toUpperCase())
+    .filter(Boolean);
+}
+
+function isChooseMultipleType(type: string): boolean {
+  return /multiple choice.*choose multiple/i.test(type);
+}
+
+function matchAnswer(student: string, correct: string, type = ''): boolean {
   if (!student || !correct) return false;
+
+  if (isChooseMultipleType(type)) {
+    const studentTokens = Array.from(new Set(splitAnswerTokens(student))).sort();
+    const correctTokens = Array.from(new Set(splitAnswerTokens(correct))).sort();
+    return studentTokens.length > 0 && studentTokens.join(' ') === correctTokens.join(' ');
+  }
+
   return normalize(student) === normalize(correct);
+}
+
+function formatCorrectAnswer(question: Record<string, unknown>, typeName: string): string {
+  if (isChooseMultipleType(typeName)) {
+    const answers = asArray(question.correctAnswers)
+      .map((value) => String(value ?? '').trim().toUpperCase())
+      .filter(Boolean);
+    if (answers.length > 0) return answers.join(' ');
+  }
+
+  return txt(
+    question.correctAnswer
+      ?? (asArray(question.correctAnswers).length > 0 ? asArray(question.correctAnswers)[0] : '')
+      ?? '',
+    '',
+  );
 }
 
 function flattenAnswerKey(ak: unknown): Record<string, string> {
@@ -86,6 +137,29 @@ function flattenStudentAnswers(ans: unknown): Record<string, string> {
     flat[k] = String(v ?? '').trim();
   }
   return flat;
+}
+
+function getStudentAnswerForQuestion(
+  studentAnswers: Record<string, string>,
+  startNumber: number,
+  endNumber: number,
+): string {
+  const exactKey = `${startNumber}-${endNumber}`;
+  if (studentAnswers[exactKey]) return studentAnswers[exactKey];
+
+  const startKey = String(startNumber);
+  if (studentAnswers[startKey]) return studentAnswers[startKey];
+
+  const endKey = String(endNumber);
+  if (studentAnswers[endKey]) return studentAnswers[endKey];
+
+  return '';
+}
+
+function compareMultiAnswer(student: string, correct: string): boolean {
+  const studentTokens = Array.from(new Set(splitAnswerTokens(student))).sort();
+  const correctTokens = Array.from(new Set(splitAnswerTokens(correct))).sort();
+  return studentTokens.length > 0 && studentTokens.join(' ') === correctTokens.join(' ');
 }
 
 function isLikelyUrl(value: string): boolean {
@@ -190,65 +264,118 @@ function buildSections(
   answerKey: Record<string, string>,
   studentAnswers: Record<string, string>,
 ): Section[] {
-  // Try to group by parts from metadata
   const metadata = asRecord(testData?.metadata);
   const parts = asArray(metadata?.parts);
 
   if (parts.length > 0) {
     const sections: Section[] = [];
 
-    for (const part of parts) {
+    for (const [partIndex, part] of parts.entries()) {
       const partRec = asRecord(part);
-      const partName = txt(partRec.name ?? partRec.title, 'Part');
+      const partName = txt(partRec.name ?? partRec.title, `Part ${partIndex + 1}`);
       const questionTypes = asArray(partRec.questionTypes ?? partRec.sections);
+      let currentNumber = toPositiveInt(partRec.startNumber, 1);
+      const blocks: Section['blocks'] = [];
+      const rows: AnswerRow[] = [];
 
       for (const qt of questionTypes) {
         const qtRec = asRecord(qt);
         const typeName = txt(qtRec.type ?? qtRec.label ?? qtRec.kind, 'Questions');
         const questions = asArray(qtRec.questions ?? qtRec.items);
-        const startNumber = Number(qtRec.startNumber ?? 1) || 1;
+        const blockRows: AnswerRow[] = [];
+        currentNumber = toPositiveInt(qtRec.startNumber, currentNumber);
 
-        const rows: AnswerRow[] = [];
-        for (let i = 0; i < questions.length; i++) {
-          const qNum = String(startNumber + i);
-          const correct = answerKey[qNum] ?? '';
-          const student = studentAnswers[qNum] ?? '';
-          rows.push({
-            qNum,
-            studentAnswer: student,
-            correctAnswer: correct,
-            isCorrect: matchAnswer(student, correct),
-          });
+        if (isChooseMultipleType(typeName)) {
+          for (const question of questions) {
+            const questionRec = asRecord(question);
+            const choiceCount = toPositiveInt(questionRec.choiceCount, 2);
+            const startNumber = currentNumber;
+            const endNumber = startNumber + choiceCount - 1;
+            const qLabel = formatQuestionLabel(startNumber, endNumber);
+            const correct = formatCorrectAnswer(questionRec, typeName) || answerKey[String(startNumber)] || '';
+            const student = getStudentAnswerForQuestion(studentAnswers, startNumber, endNumber);
+            const isCorrect = compareMultiAnswer(student, correct);
+
+            blockRows.push({
+              qNum: qLabel,
+              qLabel,
+              studentAnswer: student,
+              correctAnswer: correct,
+              isCorrect,
+              score: isCorrect ? choiceCount : 0,
+              maxScore: choiceCount,
+            });
+
+            currentNumber = endNumber + 1;
+          }
+        } else {
+          const questionCount = Math.max(
+            toPositiveInt(qtRec.questionCount, 0),
+            questions.length,
+          );
+
+          for (let index = 0; index < questionCount; index += 1) {
+            const qNum = String(currentNumber + index);
+            const questionRec = asRecord(questions[index]);
+            const correct = txt(questionRec.correctAnswer ?? answerKey[qNum] ?? '', '');
+            const student = studentAnswers[qNum] ?? '';
+            const isCorrect = matchAnswer(student, correct, typeName);
+
+            blockRows.push({
+              qNum,
+              qLabel: qNum,
+              studentAnswer: student,
+              correctAnswer: correct,
+              isCorrect,
+              score: isCorrect ? 1 : 0,
+              maxScore: 1,
+            });
+          }
+
+          currentNumber += questionCount;
         }
 
-        if (rows.length > 0) {
-          sections.push({
-            title: partName,
-            type: typeName,
-            rows,
-          });
-        }
+        if (blockRows.length === 0) continue;
+
+        blocks.push({
+          type: typeName,
+          subtitle: txt(qtRec.instructions, ''),
+          rows: blockRows,
+        });
+        rows.push(...blockRows);
+      }
+
+      if (blocks.length > 0) {
+        sections.push({
+          title: partName,
+          rows,
+          blocks,
+        });
       }
     }
 
     if (sections.length > 0) return sections;
   }
 
-  // Fallback: flat list
   const allNums = new Set([...Object.keys(answerKey), ...Object.keys(studentAnswers)]);
   const sorted = Array.from(allNums).sort((a, b) => Number(a) - Number(b));
   const rows: AnswerRow[] = sorted.map((qNum) => {
     const correct = answerKey[qNum] ?? '';
     const student = studentAnswers[qNum] ?? '';
+    const isCorrect = matchAnswer(student, correct);
+
     return {
       qNum,
+      qLabel: qNum,
       studentAnswer: student,
       correctAnswer: correct,
-      isCorrect: matchAnswer(student, correct),
+      isCorrect,
+      score: isCorrect ? 1 : 0,
+      maxScore: 1,
     };
   });
 
-  return rows.length > 0 ? [{ title: 'All Questions', type: '', rows }] : [];
+  return rows.length > 0 ? [{ title: 'All Questions', rows, blocks: [{ type: 'Questions', rows }] }] : [];
 }
 
 /* ── component ─────────────────────────────────────────────────── */
@@ -303,8 +430,8 @@ export function ObjectiveTestDrawer({
 
       // Compute stats
       const allRows = builtSections.flatMap((s) => s.rows);
-      setTotalQuestions(allRows.length);
-      setTotalCorrect(allRows.filter((r) => r.isCorrect).length);
+      setTotalQuestions(allRows.reduce((total, row) => total + row.maxScore, 0));
+      setTotalCorrect(allRows.reduce((total, row) => total + row.score, 0));
     } catch (err) {
       console.error('[OBJ DRAWER]', err);
       setError('Failed to load test details.');
@@ -349,7 +476,7 @@ export function ObjectiveTestDrawer({
         {/* ── Header ─────────────────────────────────────── */}
         <div className="obj-drawer-header">
           <div className="obj-drawer-header-left">
-            <button className="obj-drawer-close" onClick={onClose} title="Close" aria-label="Close test details">
+            <button className="obj-drawer-close" onClick={onClose} title="Close">
               <i className="fas fa-times" />
             </button>
             <div className="obj-drawer-title-block">
@@ -363,7 +490,6 @@ export function ObjectiveTestDrawer({
               disabled={!hasPrev}
               onClick={onPrev}
               title="Previous (←)"
-              aria-label="View previous test"
             >
               <i className="fas fa-chevron-left" />
             </button>
@@ -372,7 +498,6 @@ export function ObjectiveTestDrawer({
               disabled={!hasNext}
               onClick={onNext}
               title="Next (→)"
-              aria-label="View next test"
             >
               <i className="fas fa-chevron-right" />
             </button>
@@ -535,35 +660,57 @@ export function ObjectiveTestDrawer({
 
                     {sections.map((section, si) => (
                       <div key={si} className="obj-section">
+                        <div className="obj-section-part">{section.title}</div>
                         <div className="obj-section-header">
-                          <h3 className="obj-section-title">{section.title}</h3>
-                          {section.type && <span className="obj-section-type">{section.type}</span>}
+                          <div className="obj-section-header-main">
+                            <h3 className="obj-section-title">{section.blocks.length > 1 ? 'Mixed question types' : (section.blocks[0]?.type || 'Questions')}</h3>
+                            <p className="obj-section-note">
+                              {section.blocks.length > 1
+                                ? `${section.blocks.length} question types in this ${section.title.toLowerCase()}`
+                                : (section.blocks[0]?.subtitle || '')}
+                            </p>
+                          </div>
                           <span className="obj-section-score">
-                            {section.rows.filter((r) => r.isCorrect).length}/{section.rows.length}
+                            {section.rows.reduce((total, row) => total + row.score, 0)}/{section.rows.reduce((total, row) => total + row.maxScore, 0)}
                           </span>
                         </div>
-                        <div className="obj-answer-grid">
-                          {section.rows.map((row) => (
-                            <div
-                              key={row.qNum}
-                              className={`obj-answer-row ${row.isCorrect ? 'correct' : row.studentAnswer ? 'wrong' : 'unanswered'}`}
-                            >
-                              <span className="obj-answer-num">Q{row.qNum}</span>
-                              <span className="obj-answer-student">
-                                {row.studentAnswer || <em className="obj-no-answer">—</em>}
-                              </span>
-                              {!row.isCorrect && row.correctAnswer && (
-                                <span className="obj-answer-correct">
-                                  <i className="fas fa-check" /> {row.correctAnswer}
+                        <div className="obj-part-blocks">
+                          {section.blocks.map((block, blockIndex) => (
+                            <div key={`${section.title}-${blockIndex}`} className="obj-part-block">
+                              <div className="obj-part-block-header">
+                                <div className="obj-section-header-main">
+                                  <h4 className="obj-part-block-title">{block.type || 'Questions'}</h4>
+                                  {block.subtitle && <p className="obj-part-block-note">{block.subtitle}</p>}
+                                </div>
+                                <span className="obj-part-block-score">
+                                  {block.rows.reduce((total, row) => total + row.score, 0)}/{block.rows.reduce((total, row) => total + row.maxScore, 0)}
                                 </span>
-                              )}
-                              <span className="obj-answer-icon">
-                                {row.isCorrect ? (
-                                  <i className="fas fa-check-circle obj-icon-correct" />
-                                ) : (
-                                  <i className="fas fa-times-circle obj-icon-wrong" />
-                                )}
-                              </span>
+                              </div>
+                              <div className="obj-answer-grid">
+                                {block.rows.map((row) => (
+                                  <div
+                                    key={row.qNum}
+                                    className={`obj-answer-row ${row.isCorrect ? 'correct' : row.studentAnswer ? 'wrong' : 'unanswered'}`}
+                                  >
+                                    <span className="obj-answer-num">Q{row.qLabel}</span>
+                                    <span className="obj-answer-student">
+                                      {row.studentAnswer || <em className="obj-no-answer">—</em>}
+                                    </span>
+                                    {!row.isCorrect && row.correctAnswer && (
+                                      <span className="obj-answer-correct">
+                                        <i className="fas fa-check" /> {row.correctAnswer}
+                                      </span>
+                                    )}
+                                    <span className="obj-answer-icon">
+                                      {row.isCorrect ? (
+                                        <i className="fas fa-check-circle obj-icon-correct" />
+                                      ) : (
+                                        <i className="fas fa-times-circle obj-icon-wrong" />
+                                      )}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
                           ))}
                         </div>
