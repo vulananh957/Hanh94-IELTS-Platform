@@ -111,6 +111,22 @@ function extractBand(result: any): number {
   return Number(result.ieltsBand ?? result.score ?? 0);
 }
 
+function extractDate(value: unknown): Date {
+  if (!value) return new Date();
+  if (value instanceof Date) return value;
+  if (value && typeof value === 'object' && 'toDate' in (value as Record<string, unknown>) && typeof (value as { toDate?: unknown }).toDate === 'function') {
+    return (value as { toDate: () => Date }).toDate();
+  }
+  if (value && typeof value === 'object' && 'seconds' in (value as Record<string, unknown>) && typeof (value as { seconds?: unknown }).seconds === 'number') {
+    return new Date((value as { seconds: number }).seconds * 1000);
+  }
+  return new Date(value as string | number);
+}
+
+function normalizeStatus(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase();
+}
+
 // ─── Weekly chart builder ─────────────────────────────────────────────────────
 
 function buildWeeklyActivity(
@@ -129,7 +145,8 @@ function buildWeeklyActivity(
     const slot = days.find((d) => d._date === item.completedAt.toDateString());
     if (!slot) continue;
     slot.count += 1;
-    if (item.score !== null && item.score > 0) {
+    // Include 0 as a valid band score in the weekly chart
+    if (item.score !== null) {
       slot.score = (slot.score ?? 0) + item.score;
     }
   }
@@ -166,11 +183,7 @@ export async function fetchStudentDashboard(
       // ✅ CORRECT collection: testResults (not "attempts")
       // Filter: studentEmail + status=completed  (mirrors old dashboard exactly)
       getDocs(
-        query(
-          collection(db, 'testResults'),
-          where('studentEmail', '==', studentEmail),
-          where('status', '==', 'completed'),
-        ),
+        query(collection(db, 'testResults'), where('studentEmail', '==', studentEmail)),
       ).catch(() => null),
 
       // Writing submissions
@@ -212,13 +225,33 @@ export async function fetchStudentDashboard(
     // ── 4. Deduplicate testResults by testId (keep latest per test) ───────────
     // Same logic as old dashboard: group by testId, keep latest completedAt
     const latestResults = new Map<string, any>();
+    const latestWritingResults = new Map<string, any>();
     resultsSnap?.docs.forEach((d) => {
       const result = d.data();
       const testId = result.testId as string;
       if (!testId) return;
-      const completedAt: Date = result.completedAt?.toDate?.() ?? new Date(result.completedAt);
-      if (!latestResults.has(testId) || completedAt > latestResults.get(testId)._completedAt) {
-        latestResults.set(testId, { ...result, _completedAt: completedAt });
+      const skill = resolveSkillFromDb(result, testSkillMap);
+      const completedAt: Date = extractDate(result.completedAt || result.submittedAt || result.gradedAt);
+      const status = normalizeStatus(result.status);
+
+      if (skill === 'writing') {
+        // Prefer graded over pending; tie-break by timestamp.
+        const existing = latestWritingResults.get(testId);
+        const existingStatus = existing ? normalizeStatus(existing.status) : '';
+        if (
+          !existing ||
+          (status === 'graded' && existingStatus !== 'graded') ||
+          (status === 'graded' && existingStatus === 'graded' && completedAt > extractDate(existing.completedAt || existing.submittedAt || existing.gradedAt))
+        ) {
+          latestWritingResults.set(testId, { ...result, _completedAt: completedAt });
+        }
+        return;
+      }
+
+      if (normalizeStatus(result.status) === 'completed') {
+        if (!latestResults.has(testId) || completedAt > latestResults.get(testId)._completedAt) {
+          latestResults.set(testId, { ...result, _completedAt: completedAt });
+        }
       }
     });
 
@@ -237,33 +270,44 @@ export async function fetchStudentDashboard(
       // ✅ CORRECT score fields: ieltsBand || score (not scores.ieltsBand)
       const band = extractBand(result);
 
-      weeklyRaw.push({ completedAt, score: band > 0 ? band : null });
+      // Include 0-band (0 is a valid IELTS score) in weekly chart and skill stats
+      weeklyRaw.push({ completedAt, score: band });
 
-      if (skill && skill !== 'writing' && band > 0) {
+      if (skill && skill !== 'writing') {
         skillStats[skill].total += band;
         skillStats[skill].count += 1;
         skillStats[skill].history.push(band);
       }
     }
 
-    // ── 6. Writing: deduplicate by testId, count graded with score > 0 ────────
-    // ✅ CORRECT filter: status === 'graded' && writingScore > 0 (mirrors old dashboard)
-    const latestWriting = new Map<string, any>();
+    // ── 6. Writing: merge testResults (writing) + writing collection, deduplicate by testId ─
+    // Use Map keyed by testId to merge both sources, keeping the graded entry with highest score.
+    const writingMap = new Map<string, any>();
+    for (const [testId, resultData] of latestWritingResults) {
+      const score: number = resultData.writingScore ?? 0;
+      const submittedAt: Date = extractDate(resultData.submittedAt || resultData.completedAt || resultData.gradedAt || resultData.startedAt);
+      if (!writingMap.has(testId) || (normalizeStatus(resultData.status) === 'graded' && score > (writingMap.get(testId)._score ?? 0))) {
+        writingMap.set(testId, { ...resultData, _submittedAt: submittedAt, _score: score });
+      }
+    }
+
     writingSnap?.docs.forEach((d) => {
       const data = d.data();
-      const key = (data.testId || d.id) as string;
-      const submittedAt: Date = data.submittedAt?.toDate?.() ?? new Date(data.submittedAt);
-      if (!latestWriting.has(key) || submittedAt > latestWriting.get(key)._submittedAt) {
-        latestWriting.set(key, { ...data, _submittedAt: submittedAt, _docId: d.id });
+      const testId = (data.testId || d.id) as string;
+      const submittedAt: Date = extractDate(data.submittedAt || data.completedAt || data.gradedAt);
+      const score: number = data.writingScore ?? 0;
+      if (!writingMap.has(testId) || (normalizeStatus(data.status) === 'graded' && score > (writingMap.get(testId)._score ?? 0))) {
+        writingMap.set(testId, { ...data, _submittedAt: submittedAt, _score: score });
       }
     });
 
-    for (const [, writingData] of latestWriting) {
-      const score: number = writingData.writingScore ?? 0;
+    for (const [, writingData] of writingMap) {
+      const score: number = writingData._score;
       const submittedAt: Date = writingData._submittedAt;
-      weeklyRaw.push({ completedAt: submittedAt, score: score > 0 ? score : null });
+      const isGraded = normalizeStatus(writingData.status) === 'graded';
+      weeklyRaw.push({ completedAt: submittedAt, score: isGraded ? score : null });
 
-      if (writingData.status === 'graded' && score > 0) {
+      if (isGraded) {
         skillStats.writing.total += score;
         skillStats.writing.count += 1;
         skillStats.writing.history.push(score);
@@ -290,13 +334,9 @@ export async function fetchStudentDashboard(
         ? Math.round((validAverages.reduce((a, b) => a + b, 0) / validAverages.length) * 2) / 2
         : null;
 
-    // ── 9. Tests completed = unique deduplicated test results + graded writings ─
-    // Same counting logic as old dashboard:
-    //   completedTestsFromCollection.length + completedWritings.length
-    const gradedWritingCount = [...latestWriting.values()].filter(
-      (w) => w.writingScore > 0 && w.status === 'graded',
-    ).length;
-    const testsCompleted = latestResults.size + gradedWritingCount;
+    // ── 9. Tests completed = unique deduplicated objective results + writing submissions ─
+    const writingCompletedCount = writingMap.size;
+    const testsCompleted = latestResults.size + writingCompletedCount;
 
     // ── 10. Available tests (class-filtered, not yet completed by this student) ─
     let availableTests = 0;
@@ -348,7 +388,6 @@ export async function fetchStudentDashboard(
         readingAvg: skillStats.reading.average,
         writingAvg: skillStats.writing.average,
         latestResultsCount: latestResults.size,
-        gradedWritingCount,
       });
     }
 
@@ -380,7 +419,6 @@ export async function fetchStudentRecentActivity(
         query(
           collection(db, 'testResults'),
           where('studentEmail', '==', studentEmail),
-          where('status', '==', 'completed'),
           // no orderBy: avoids composite index requirement; we sort in-memory below
           limit(20),
         ),
@@ -406,43 +444,54 @@ export async function fetchStudentRecentActivity(
 
     resultsSnap?.docs.forEach((d) => {
       const data = d.data();
-      const completedAt: Date = data.completedAt?.toDate?.() ?? new Date(data.completedAt);
-      // ✅ CORRECT score: ieltsBand || score
-      const band = extractBand(data);
-      const skill = resolveSkillFromDb(data as Record<string, unknown>, testSkillMap) ?? 'default';
-      raw.push({
-        id: d.id,
-        testId: data.testId ?? '',
-        testName: data.testName ?? data.name ?? 'Test',
-        testSkill: skill,
-        score: band > 0 ? band : null,
-        status: 'completed',
-        date: completedAt,
-        timeSpentMinutes: null,
-      });
+      const skill = resolveSkillFromDb(data as Record<string, unknown>, testSkillMap);
+      const completedAt: Date = extractDate(data.completedAt || data.submittedAt || data.gradedAt);
+      const status = normalizeStatus(data.status);
+      const isWriting = skill === 'writing';
+      // Writing only appears in recent activity once graded; objective tests appear on submission.
+      if ((isWriting && status === 'graded') || (!isWriting && status === 'completed')) {
+        // Writing: use writingScore (set by teacher); objective: use ieltsBand/score.
+        const score: number | null = isWriting
+          ? (typeof data.writingScore === 'number' && data.writingScore > 0 ? data.writingScore : null)
+          : (typeof data.ieltsBand === 'number' && data.ieltsBand >= 0 ? data.ieltsBand : (typeof data.score === 'number' ? data.score : null));
+        raw.push({
+          id: d.id,
+          testId: data.testId ?? '',
+          testName: data.testName ?? data.name ?? 'Test',
+          testSkill: skill ?? 'default',
+          score,
+          status: String(data.status ?? 'completed'),
+          date: completedAt,
+          timeSpentMinutes: null,
+        });
+      }
     });
 
     writingSnap?.docs.forEach((d) => {
       const data = d.data();
-      const submittedAt: Date = data.submittedAt?.toDate?.() ?? new Date(data.submittedAt);
-      raw.push({
-        id: d.id,
-        testId: data.testId ?? d.id,
-        testName: data.testName ?? 'Writing Test',
-        testSkill: 'writing',
-        score: data.writingScore ?? null,
-        status: data.status ?? 'pending',
-        date: submittedAt,
-        timeSpentMinutes: null,
-      });
+      const submittedAt: Date = extractDate(data.submittedAt || data.completedAt || data.gradedAt);
+      const status = normalizeStatus(data.status);
+      // Only show writing in recent activity once graded.
+      if (status === 'graded') {
+        raw.push({
+          id: d.id,
+          testId: data.testId ?? d.id,
+          testName: data.testName ?? 'Writing Test',
+          testSkill: 'writing',
+          score: data.writingScore ?? null,
+          status: String(data.status ?? 'graded'),
+          date: submittedAt,
+          timeSpentMinutes: null,
+        });
+      }
     });
 
-    // Deduplicate per testId+skill, keep latest
+    // Deduplicate by Firestore document ID — each doc.id is globally unique,
+    // so no two submissions can map to the same key, regardless of how testSkill resolves.
     const uniqueMap = new Map<string, StudentActivity>();
     raw.forEach((a) => {
-      const key = `${a.testId}_${a.testSkill}`;
-      if (!uniqueMap.has(key) || a.date > uniqueMap.get(key)!.date) {
-        uniqueMap.set(key, a);
+      if (!uniqueMap.has(a.id)) {
+        uniqueMap.set(a.id, a);
       }
     });
 

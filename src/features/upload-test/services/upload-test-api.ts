@@ -65,21 +65,23 @@ function getTokenFromStorageBag(bag: Storage): string | null {
   }
 }
 
-async function getIdToken(): Promise<string> {
+export async function getIdToken(): Promise<string> {
   if (auth.currentUser) {
     return auth.currentUser.getIdToken();
   }
 
-  const localToken = getTokenFromStorageBag(localStorage);
-  if (localToken) return localToken;
+  if (typeof window !== 'undefined') {
+    const localToken = getTokenFromStorageBag(localStorage);
+    if (localToken) return localToken;
 
-  const sessionToken = getTokenFromStorageBag(sessionStorage);
-  if (sessionToken) return sessionToken;
+    const sessionToken = getTokenFromStorageBag(sessionStorage);
+    if (sessionToken) return sessionToken;
+  }
 
   throw new Error('Unable to find Firebase ID token. Please sign in again.');
 }
 
-async function callCloudFunction<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
+export async function callCloudFunction<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
   const token = await getIdToken();
 
   const response = await fetch(`${BASE_URL}${path}`, {
@@ -142,7 +144,7 @@ export function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
-function normalizeFileName(name: string): string {
+export function normalizeFileName(name: string): string {
   return name
     .trim()
     .replace(/\s+/g, '_')
@@ -290,11 +292,22 @@ export async function uploadInlineImagesForCreate(input: {
 
 async function uploadFromRef(basePath: string, fallbackName: string, fileRef: UploadFileRef): Promise<string> {
   const source = fileRef.file || fileRef.dataUrl;
+
+  // If the ref already has a remote URL (e.g. Firebase storage), return it directly
+  if (fileRef.url) {
+    return fileRef.url;
+  }
+
+  // If dataUrl is a remote-like URL (not a data: URI), return it directly too
+  if (source && typeof source === 'string' && isRemoteLikeImageSrc(source)) {
+    return source;
+  }
+
   if (!source) {
     throw new Error(`File source missing for ${fileRef.name || fallbackName}`);
   }
 
-  return uploadFileAndGetURL(basePath, fileRef.name || fallbackName, source);
+  return uploadFileAndGetURL(basePath, fileRef.name || fallbackName, source as string);
 }
 
 export async function uploadFileAndGetURL(

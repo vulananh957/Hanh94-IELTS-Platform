@@ -213,8 +213,8 @@
 .sa-skill-badge.writing { background: rgba(168, 85, 247, 0.12); color: #7c3aed; }
 .sa-skill-badge.general { background: rgba(148, 163, 184, 0.14); color: #475569; }
 
-.sa-badge.not-done { background: rgba(16, 185, 129, 0.12); color: #047857; }
-.sa-badge.completed { background: rgba(148, 163, 184, 0.16); color: #475569; }
+.sa-badge.not-done { background: rgba(148, 163, 184, 0.16); color: #475569; }
+.sa-badge.completed { background: rgba(16, 185, 129, 0.12); color: #047857; }
 
 .sa-card h4 {
   margin: 0;

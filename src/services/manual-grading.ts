@@ -29,6 +29,7 @@ export type ManualGradingSubmission = {
   task2Content: string;
   feedbackFileUrl: string | null;
   feedbackFileName: string | null;
+  source: 'writing' | 'testResult' | 'attempt';
 };
 
 const CACHE_TTL_MS = 90 * 1000;
@@ -86,11 +87,16 @@ function pickText(record: Record<string, unknown>, keys: string[]): string {
 
 function normalizeStatus(value: unknown, writingScore: unknown): 'pending' | 'graded' {
   const status = asText(value).toLowerCase();
-  if (status === 'graded' || status === 'completed') {
+  if (status === 'graded') {
     return 'graded';
   }
   if (status === 'pending') {
     return 'pending';
+  }
+
+  if (status === 'completed') {
+    const score = asNumber(writingScore);
+    return score != null && score > 0 ? 'graded' : 'pending';
   }
 
   const score = asNumber(writingScore);
@@ -135,6 +141,7 @@ function readCache(teacherEmail: string): ManualGradingSubmission[] | null {
       feedbackFileName: asText(item.feedbackFileName) || null,
       task1Content: asText(item.task1Content),
       task2Content: asText(item.task2Content),
+      source: (asText(item.source) as 'writing' | 'testResult' | 'attempt') || 'writing',
     }));
   } catch {
     return null;
@@ -234,13 +241,16 @@ export async function getManualGradingSubmissions(
 
   const request = (async () => {
     const db = getFirestore(firebaseApp);
-    const [testsSnapshot, writingSnapshot, attemptsSnapshot] = await Promise.all([
+    const [testsSnapshot, writingSnapshot, testResultsSnapshot, attemptsSnapshot, classesSnapshot] = await Promise.all([
       getDocs(collection(db, 'tests')),
       getDocs(collection(db, 'writing')),
+      getDocs(query(collection(db, 'testResults'), where('testType', '==', 'writing'))),
       getDocs(query(collection(db, 'attempts'), where('status', '==', 'completed'))),
+      getDocs(collection(db, 'classes')),
     ]);
 
     const writingLatestByKey = new Map<string, { id: string; data: Record<string, unknown>; submittedAtMs: number }>();
+    const testResultLatestByKey = new Map<string, { id: string; data: Record<string, unknown>; submittedAtMs: number }>();
 
     for (const docSnap of writingSnapshot.docs) {
       const data = docSnap.data() as Record<string, unknown>;
@@ -253,6 +263,22 @@ export async function getManualGradingSubmissions(
       const existing = writingLatestByKey.get(key);
       if (!existing || submittedAtMs > existing.submittedAtMs) {
         writingLatestByKey.set(key, { id: docSnap.id, data, submittedAtMs });
+      }
+    }
+
+    for (const docSnap of testResultsSnapshot.docs) {
+      const data = docSnap.data() as Record<string, unknown>;
+      const studentEmail = asText(data.studentEmail).toLowerCase();
+      const testId = asText(data.testId);
+      const status = asText(data.status).toLowerCase();
+      if (!studentEmail || !testId) continue;
+      if (status !== 'pending' && status !== 'graded' && status !== 'completed') continue;
+
+      const key = `${studentEmail}_${testId}`;
+      const submittedAtMs = toMillis(data.submittedAt || data.completedAt || data.createdAt || data.updatedAt || data.startedAt);
+      const existing = testResultLatestByKey.get(key);
+      if (!existing || submittedAtMs > existing.submittedAtMs) {
+        testResultLatestByKey.set(key, { id: docSnap.id, data, submittedAtMs });
       }
     }
 
@@ -281,6 +307,7 @@ export async function getManualGradingSubmissions(
 
     const allKeys = new Set<string>([
       ...writingLatestByKey.keys(),
+      ...testResultLatestByKey.keys(),
       ...latestAttemptsByKey.keys(),
     ]);
 
@@ -292,61 +319,74 @@ export async function getManualGradingSubmissions(
       batchByField(db, 'users', 'email', studentEmails),
     ]);
 
-    const classCodes = Array.from(new Set(
-      Array.from(allKeys)
-        .map((key) => {
-          const writing = writingLatestByKey.get(key);
-          const attempt = latestAttemptsByKey.get(key);
-          const studentEmail = writing
-            ? asText(writing.data.studentEmail).toLowerCase()
-            : attempt?.studentEmail || '';
-          const student = userMap.get(studentEmail);
-          return asText(writing?.data.classCode || student?.classCode);
-        })
-        .filter(Boolean),
-    ));
-
-    const classMap = await batchByField(db, 'classes', 'code', classCodes);
+    const classMapById = new Map<string, Record<string, unknown>>();
+    const classMapByCode = new Map<string, Record<string, unknown>>();
+    classesSnapshot.forEach((docSnap) => {
+      const data = docSnap.data() as Record<string, unknown>;
+      classMapById.set(docSnap.id, data);
+      const code = asText(data.code);
+      if (code) classMapByCode.set(code, data);
+    });
 
     const submissions: ManualGradingSubmission[] = [];
 
     for (const key of allKeys) {
       const writing = writingLatestByKey.get(key);
+      const testResult = testResultLatestByKey.get(key);
       const fallbackAttempt = latestAttemptsByKey.get(key);
       const [studentEmailFromKey, testIdFromKey] = key.split('_');
 
-      const rowData = writing?.data || {};
+      const primary = (() => {
+        if (writing && testResult) {
+          if (testResult.submittedAtMs > writing.submittedAtMs) {
+            return { source: 'testResult' as const, id: testResult.id, data: testResult.data };
+          }
+          return { source: 'writing' as const, id: writing.id, data: writing.data };
+        }
+        if (writing) return { source: 'writing' as const, id: writing.id, data: writing.data };
+        if (testResult) return { source: 'testResult' as const, id: testResult.id, data: testResult.data };
+        return null;
+      })();
+
+      const rowData = primary?.data || {};
       const studentEmail = asText(rowData.studentEmail || studentEmailFromKey).toLowerCase();
       const testId = asText(rowData.testId || testIdFromKey);
       const student = userMap.get(studentEmail);
       const test = testMap.get(testId);
 
-      const classCodeRaw = asText(rowData.classCode || student?.classCode);
-      const classRecord = classMap.get(classCodeRaw);
-      const classLabel = asText(classRecord?.name || classRecord?.code || classCodeRaw);
+        const classRefRaw = asText(
+          rowData.classId
+          || rowData.classCode
+          || student?.classId
+          || student?.classCode,
+        );
+        const classRecord = classMapById.get(classRefRaw) || classMapByCode.get(classRefRaw);
+        const classLabel = asText(classRecord?.name || classRecord?.code || classRefRaw);
 
-      const answers = writing
+      const answers = primary
         ? asRecord(rowData.answers)
         : asRecord(fallbackAttempt?.answers);
 
-      const task1Content = writing
+      const task1Content = primary
         ? (pickText(answers, ['writingTask1', 'task1', 'task1Content', 'writing1'])
           || pickText(rowData, ['writingTask1', 'task1', 'task1Content', 'writing1']))
         : (pickText(answers, ['writingTask1', 'task1', 'task1Content', 'writing1'])
           || 'No writing content found.');
 
-      const task2Content = writing
+      const task2Content = primary
         ? (pickText(answers, ['writingTask2', 'task2', 'task2Content', 'writing2'])
           || pickText(rowData, ['writingTask2', 'task2', 'task2Content', 'writing2']))
         : pickText(answers, ['writingTask2', 'task2', 'task2Content', 'writing2']);
 
       const writingScore = asNumber(rowData.writingScore);
-      const normalizedStatus = writing
+      const normalizedStatus = primary
         ? normalizeStatus(rowData.status, rowData.writingScore)
         : 'pending';
 
       submissions.push({
-        id: writing ? writing.id : `attempt:${fallbackAttempt?.id || key}`,
+        id: primary
+          ? `${primary.source}:${primary.id}`
+          : `attempt:${fallbackAttempt?.id || key}`,
         testId,
         testName: asText(test?.name || rowData.testName || 'Writing Test'),
         studentEmail,
@@ -358,8 +398,8 @@ export async function getManualGradingSubmissions(
             || 'Student',
         ),
         classCode: classLabel,
-        submittedAt: writing
-          ? toDate(rowData.submittedAt || rowData.createdAt || rowData.updatedAt)
+        submittedAt: primary
+          ? toDate(rowData.submittedAt || rowData.completedAt || rowData.createdAt || rowData.updatedAt || rowData.startedAt)
           : (fallbackAttempt?.submittedAt ?? null),
         status: normalizedStatus,
         writingScore,
@@ -371,6 +411,7 @@ export async function getManualGradingSubmissions(
         task2Content,
         feedbackFileUrl: asText(rowData.feedbackFileUrl || rowData.feedbackUrl) || null,
         feedbackFileName: asText(rowData.feedbackFileName) || null,
+        source: primary?.source || 'attempt',
       });
     }
 
@@ -408,8 +449,25 @@ export async function submitManualGrade(params: {
 }): Promise<void> {
   const db = getFirestore(firebaseApp);
 
-  if (!params.submissionId.startsWith('attempt:')) {
-    await updateDoc(doc(db, 'writing', params.submissionId), {
+  const separatorIndex = params.submissionId.indexOf(':');
+  const hasPrefix = separatorIndex > 0;
+  const source = hasPrefix ? params.submissionId.slice(0, separatorIndex) : 'writing';
+  const rawId = hasPrefix ? params.submissionId.slice(separatorIndex + 1) : params.submissionId;
+
+  if (source === 'writing') {
+    await updateDoc(doc(db, 'writing', rawId), {
+      task1Score: params.task1Score,
+      task2Score: params.task2Score,
+      writingScore: params.writingScore,
+      comments: params.comments,
+      status: 'graded',
+      gradedAt: new Date(),
+      gradedBy: params.teacherEmail,
+      ...(params.feedbackFileName ? { feedbackFileName: params.feedbackFileName } : {}),
+      ...(params.feedbackFileUrl ? { feedbackFileUrl: params.feedbackFileUrl } : {}),
+    });
+  } else if (source === 'testResult') {
+    await updateDoc(doc(db, 'testResults', rawId), {
       task1Score: params.task1Score,
       task2Score: params.task2Score,
       writingScore: params.writingScore,

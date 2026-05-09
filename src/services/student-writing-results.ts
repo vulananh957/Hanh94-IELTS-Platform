@@ -45,39 +45,115 @@ function pickText(record: Record<string, unknown>, keys: string[]): string {
   return '';
 }
 
+function asDate(value: unknown, fallback: Date): Date {
+  if (value instanceof Date) return value;
+  if (value instanceof Timestamp) return value.toDate();
+  if (value && typeof value === 'object' && 'toDate' in (value as Record<string, unknown>) && typeof (value as { toDate?: unknown }).toDate === 'function') {
+    try {
+      return ((value as { toDate: () => Date }).toDate());
+    } catch {
+      return fallback;
+    }
+  }
+
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+
+  return fallback;
+}
+
+function normalizeStatus(data: Record<string, unknown>): 'pending' | 'graded' {
+  const status = asText(data.status).toLowerCase();
+  if (status === 'graded') return 'graded';
+
+  const scoreRaw = data.writingScore;
+  if (typeof scoreRaw === 'number' && Number.isFinite(scoreRaw)) return 'graded';
+
+  return 'pending';
+}
+
+function dedupeKey(result: WritingResult): string {
+  const testId = (result.testId || '').trim().toLowerCase();
+  const task1 = (result.task1Submission || '').trim().toLowerCase();
+  const task2 = (result.task2Submission || '').trim().toLowerCase();
+
+  if (task1 || task2) return `${testId}|${task1}|${task2}`;
+  return `${testId}|${result.submittedAt.getTime()}`;
+}
+
+function mergeWritingResults(results: WritingResult[]): WritingResult[] {
+  const merged = new Map<string, WritingResult>();
+
+  for (const item of results) {
+    const key = dedupeKey(item);
+    const existing = merged.get(key);
+
+    if (!existing) {
+      merged.set(key, item);
+      continue;
+    }
+
+    const existingPending = existing.writingScore === 'Pending';
+    const currentPending = item.writingScore === 'Pending';
+
+    // Prefer graded over pending for the same submission.
+    if (existingPending && !currentPending) {
+      merged.set(key, item);
+      continue;
+    }
+    if (!existingPending && currentPending) {
+      continue;
+    }
+
+    // If same status, keep the newer record.
+    if (item.completedAt.getTime() > existing.completedAt.getTime()) {
+      merged.set(key, item);
+    }
+  }
+
+  return Array.from(merged.values());
+}
+
 function mapDocToWritingResult(id: string, data: any): WritingResult {
-  const answers = asRecord(data.answers);
+  const record = asRecord(data);
+  const answers = asRecord(record.answers);
+  const status = normalizeStatus(record);
+  const submittedAt = asDate(record.submittedAt ?? record.completedAt ?? record.startedAt, new Date(0));
+  const gradedAt = status === 'graded' ? asDate(record.gradedAt, submittedAt) : undefined;
+  const completedAt = gradedAt ?? asDate(record.completedAt ?? record.submittedAt ?? record.startedAt, submittedAt);
   
   const task1Submission = 
     pickText(answers, ['writingTask1', 'task1', 'task1Content', 'writing1']) || 
-    pickText(data, ['writingTask1', 'task1', 'task1Content', 'writing1']);
+    pickText(record, ['writingTask1', 'task1', 'task1Content', 'writing1']);
 
   const task2Submission = 
     pickText(answers, ['writingTask2', 'task2', 'task2Content', 'writing2']) || 
-    pickText(data, ['writingTask2', 'task2', 'task2Content', 'writing2']);
+    pickText(record, ['writingTask2', 'task2', 'task2Content', 'writing2']);
+
+  const writingScore = status === 'graded' && typeof record.writingScore === 'number' && Number.isFinite(record.writingScore)
+    ? record.writingScore
+    : 'Pending';
 
   return {
     id,
-    testId: data.testId || id,
-    testName: data.testName || 'Writing Test',
-    writingScore: data.status === 'graded' ? data.writingScore : 'Pending',
-    task1Score: data.task1Score,
-    task2Score: data.task2Score,
-    feedback: pickText(data, ['comments', 'feedback', 'writingFeedback']),
-    feedbackFileUrl: data.feedbackFileUrl,
-    promptFileUrl: data.promptFileUrl || data.testPromptUrl || data.promptUrl,
-    submittedAt: data.submittedAt?.toDate ? data.submittedAt.toDate() : new Date(data.submittedAt),
-    gradedAt: data.gradedAt?.toDate ? data.gradedAt.toDate() : (data.gradedAt ? new Date(data.gradedAt) : undefined),
-    completedAt: data.gradedAt?.toDate
-      ? data.gradedAt.toDate()
-      : (data.gradedAt
-          ? new Date(data.gradedAt)
-          : (data.submittedAt?.toDate ? data.submittedAt.toDate() : new Date(data.submittedAt))),
-    gradedBy: data.gradedBy,
-    answers: data.answers,
+    testId: asText(record.testId) || id,
+    testName: asText(record.testName) || 'Writing Test',
+    writingScore,
+    task1Score: typeof record.task1Score === 'number' ? record.task1Score : undefined,
+    task2Score: typeof record.task2Score === 'number' ? record.task2Score : undefined,
+    feedback: pickText(record, ['comments', 'feedback', 'writingFeedback']),
+    feedbackFileUrl: asText(record.feedbackFileUrl) || undefined,
+    promptFileUrl: asText(record.promptFileUrl || record.testPromptUrl || record.promptUrl) || undefined,
+    submittedAt,
+    gradedAt,
+    completedAt,
+    gradedBy: asText(record.gradedBy) || undefined,
+    answers,
     task1Submission: task1Submission || undefined,
     task2Submission: task2Submission || undefined,
-    status: data.status,
+    status,
   };
 }
 
@@ -89,8 +165,17 @@ export async function fetchStudentWritingResults(studentEmail: string): Promise<
       collection(db, 'writing'),
       where('studentEmail', '==', studentEmail)
     );
+
+    const takeTestWritingQuery = query(
+      collection(db, 'testResults'),
+      where('studentEmail', '==', studentEmail),
+      where('testType', '==', 'writing')
+    );
     
-    const snapshot = await getDocs(writingQuery);
+    const [snapshot, takeTestSnapshot] = await Promise.all([
+      getDocs(writingQuery),
+      getDocs(takeTestWritingQuery),
+    ]);
     
     const results: WritingResult[] = [];
     
@@ -100,11 +185,22 @@ export async function fetchStudentWritingResults(studentEmail: string): Promise<
         results.push(mapDocToWritingResult(doc.id, data));
       }
     });
+
+    takeTestSnapshot.forEach((doc) => {
+      const data = doc.data();
+      const status = asText(data.status).toLowerCase();
+      // Include submitted writing attempts in Teacher Feedback, even when pending.
+      if (status === 'pending' || status === 'graded' || status === 'completed') {
+        results.push(mapDocToWritingResult(doc.id, data));
+      }
+    });
+
+    const mergedResults = mergeWritingResults(results);
     
     // Sort by completedAt descending
-    results.sort((a, b) => b.completedAt.getTime() - a.completedAt.getTime());
+    mergedResults.sort((a, b) => b.completedAt.getTime() - a.completedAt.getTime());
     
-    return results;
+    return mergedResults;
   } catch (error) {
     console.error('Error fetching writing results:', error);
     return [];

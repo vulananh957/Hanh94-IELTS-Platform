@@ -43,6 +43,9 @@ interface UploadTestStore {
   draft: TestDraft;
   extraction: ExtractionState;
   answerKeyPreview: Record<string, string[]>;
+  editingTestId: string | null;
+  isEditMode: boolean;
+  loadExistingTest: (testData: Record<string, unknown>) => void;
   setStep: (step: UploadStep) => void;
   setSkill: (skill: DraftSkill) => void;
   setTestName: (testName: string) => void;
@@ -377,8 +380,62 @@ export const useUploadTestStore = create<UploadTestStore>((set, get) => ({
   draft: createInitialDraft(),
   extraction: createInitialExtractionState(),
   answerKeyPreview: {},
+  editingTestId: null,
+  isEditMode: false,
 
   setStep: (step) => set({ step }),
+
+  loadExistingTest: (testData: Record<string, unknown>) => {
+    const asRecord = (v: unknown): Record<string, unknown> =>
+      v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+
+    const asArray = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
+    const metadata = asRecord(testData.metadata);
+    const rawParts = asArray(metadata.parts);
+
+    // Convert file URLs to UploadFileRef-compatible format
+    const files: Record<string, UploadFileRef[]> = {};
+    const rawFiles = asRecord(testData.files);
+    for (const [bucket, urls] of Object.entries(rawFiles)) {
+      const urlArr = asArray(urls);
+      if (urlArr.length > 0) {
+        files[bucket] = urlArr.map((url) => ({
+          name: String(bucket),
+          dataUrl: String(url),
+        })) as unknown as UploadFileRef[];
+      }
+    }
+
+    const classAssignmentRec = asRecord(testData.classAssignment || {});
+    const classAssignment: TestClassAssignment = {
+      distribution: classAssignmentRec.distribution === 'specific' ? 'specific' : 'all',
+      selectedClasses: asArray(classAssignmentRec.selectedClasses).map(String),
+    };
+
+    const skill = testData.skill as DraftSkill;
+    const parts = rawParts as TestPart[];
+
+    // Refresh derived state
+    const numberedParts = calculateQuestionNumbers(parts || []);
+    const answerKeyPreview = buildAnswerKeyFromParts(numberedParts);
+
+    set({
+      draft: {
+        skill: ensureValidSkill(skill) ? skill : null,
+        testName: String(testData.name || testData.testName || ''),
+        files,
+        parts: numberedParts,
+        writingRule: null,
+        classAssignment,
+      },
+      extraction: createInitialExtractionState(),
+      answerKeyPreview,
+      editingTestId: String(testData.id || ''),
+      isEditMode: true,
+      step: 1,
+    });
+  },
 
   setSkill: (skill) =>
     set((state) => ({
@@ -868,5 +925,7 @@ export const useUploadTestStore = create<UploadTestStore>((set, get) => ({
       draft: createInitialDraft(),
       extraction: createInitialExtractionState(),
       answerKeyPreview: {},
+      editingTestId: null,
+      isEditMode: false,
     }),
 }));

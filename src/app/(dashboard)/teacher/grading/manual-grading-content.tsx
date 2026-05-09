@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
+import JSZip from 'jszip';
 import { firebaseApp } from '@/services/firebase';
 import { clearAuthState } from '@/services/auth';
 import { useFileInputWithDragDrop } from '@/features/upload-test/hooks/use-file-input-with-drag-drop';
@@ -29,7 +30,7 @@ function formatDateTime(value: Date | null): string {
 
 function toSafeBand(value: number): number {
   if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(9, Math.round(value * 10) / 10));
+  return Math.max(0, Math.min(9, Math.round(value * 2) / 2));
 }
 
 function getStudentInitials(submission: ManualGradingSubmission): string {
@@ -100,6 +101,8 @@ export function ManualGradingContent() {
   const [selectedTest, setSelectedTest] = useState('all');
 
   const [selected, setSelected] = useState<ManualGradingSubmission | null>(null);
+  const [selectedForDownload, setSelectedForDownload] = useState<Set<string>>(new Set());
+  const [isBulkDownloading, setIsBulkDownloading] = useState(false);
   const [task1Score, setTask1Score] = useState<number>(0);
   const [task2Score, setTask2Score] = useState<number>(0);
   const [comments, setComments] = useState('');
@@ -319,6 +322,52 @@ export function ManualGradingContent() {
     URL.revokeObjectURL(href);
   };
 
+  const handleBulkDownload = async () => {
+    const toDownload = submissions.filter((s) => selectedForDownload.has(s.id));
+    if (toDownload.length === 0) return;
+
+    setIsBulkDownloading(true);
+    try {
+      const zip = new JSZip();
+      for (const submission of toDownload) {
+        const content = buildWordCompatibleDocument(submission);
+        const safeName = (submission.studentName || 'student').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const safeTest = (submission.testName || 'test').replace(/[^a-zA-Z0-9_-]/g, '_');
+        zip.file(`${safeName}_${safeTest}.doc`, content);
+      }
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const href = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = href;
+      anchor.download = `writing_submissions_${Date.now()}.zip`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(href);
+    } catch (err) {
+      console.error(err);
+      alert('Failed to create zip archive.');
+    } finally {
+      setIsBulkDownloading(false);
+    }
+  };
+
+  const toggleDownloadSelection = (id: string) => {
+    setSelectedForDownload((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllDownloadSelection = () => {
+    setSelectedForDownload((prev) => {
+      if (prev.size === visibleRows.length) return new Set();
+      return new Set(visibleRows.map((r) => r.id));
+    });
+  };
+
   const handleSelectFeedbackFile = (event: ChangeEvent<HTMLInputElement>) => {
     setFeedbackFile(event.target.files?.[0] || null);
   };
@@ -482,9 +531,20 @@ export function ManualGradingContent() {
                 <p className="card-subtitle">Grade writing submissions that require human evaluation</p>
                 <p className="pending-counter">Pending now: <strong>{pendingRows.length}</strong></p>
               </div>
-              <button type="button" className="refresh-btn" onClick={handleRefreshClick} disabled={isRefreshing || isLoading || isSubmitting}>
-                <i className="fas fa-sync-alt" /> {isRefreshing ? 'Refreshing...' : 'Refresh'}
-              </button>
+              <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="bulk-download-btn"
+                  onClick={handleBulkDownload}
+                  disabled={selectedForDownload.size === 0 || isBulkDownloading || isRefreshing || isLoading}
+                >
+                  <i className="fas fa-download" />
+                  {isBulkDownloading ? 'Creating ZIP...' : `Download Selected (${selectedForDownload.size})`}
+                </button>
+                <button type="button" className="refresh-btn" onClick={handleRefreshClick} disabled={isRefreshing || isLoading || isSubmitting}>
+                  <i className="fas fa-sync-alt" /> {isRefreshing ? 'Refreshing...' : 'Refresh'}
+                </button>
+              </div>
             </div>
 
             <div className="grading-filters">
@@ -548,6 +608,14 @@ export function ManualGradingContent() {
                 <table className="table grading-table">
                   <thead>
                     <tr>
+                      <th style={{ width: '40px' }}>
+                        <input
+                          type="checkbox"
+                          checked={visibleRows.length > 0 && selectedForDownload.size === visibleRows.length}
+                          onChange={toggleAllDownloadSelection}
+                          title={selectedForDownload.size === visibleRows.length ? 'Deselect all' : 'Select all for download'}
+                        />
+                      </th>
                       <th>Student Name</th>
                       <th>Test Title</th>
                       <th>Submitted Time</th>
@@ -558,11 +626,18 @@ export function ManualGradingContent() {
                   <tbody>
                     {visibleRows.length === 0 ? (
                       <tr>
-                        <td colSpan={5} className="no-data">No pending submissions found.</td>
+                        <td colSpan={6} className="no-data">No pending submissions found.</td>
                       </tr>
                     ) : (
                       visibleRows.map((submission) => (
                         <tr key={submission.id}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={selectedForDownload.has(submission.id)}
+                              onChange={() => toggleDownloadSelection(submission.id)}
+                            />
+                          </td>
                           <td>
                             <div className="student-cell">
                               <div className="student-avatar">{getStudentInitials(submission)}</div>

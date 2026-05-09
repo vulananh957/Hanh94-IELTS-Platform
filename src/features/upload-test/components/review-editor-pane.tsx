@@ -11,9 +11,6 @@ export function ReviewEditorPane({ parts, skill }: ReviewEditorPaneProps) {
     <div className="review-pane-card">
       <div className="review-pane-head">
         <h3 className="review-pane-title">Review & Edit</h3>
-        <p className="review-pane-subtitle">
-          AI pre-fill is editable. Use Change Question Type to recover from classification mistakes while preserving question text.
-        </p>
       </div>
 
       {parts.length === 0 ? (

@@ -14,7 +14,8 @@ interface SourceDocumentViewerProps {
 function isPdfLike(fileName: string, fileType?: string): boolean {
   const byMime = fileType === 'application/pdf';
   const byName = fileName.toLowerCase().endsWith('.pdf');
-  return byMime || byName;
+  const byDataUrl = fileName.startsWith('data:application/pdf');
+  return byMime || byName || byDataUrl;
 }
 
 function isWordLike(fileName: string, fileType?: string): boolean {
@@ -26,7 +27,31 @@ function isWordLike(fileName: string, fileType?: string): boolean {
 }
 
 function isImageLike(fileName: string, fileType?: string): boolean {
-  return String(fileType || '').startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(fileName);
+  if (String(fileType || '').startsWith('image/')) return true;
+  if (/^data:image\//i.test(fileName)) return true;
+  return /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(fileName);
+}
+
+function detectModeFromDataUrl(dataUrl: string | null | undefined): 'pdf' | 'image' | 'unsupported' {
+  if (!dataUrl) return 'unsupported';
+
+  // Standard data URL prefix
+  if (/^data:application\/pdf/i.test(dataUrl)) return 'pdf';
+  if (/^data:image\//i.test(dataUrl)) return 'image';
+
+  // Firebase / CDN download URL — find the filename in the path or query
+  const lc = dataUrl.toLowerCase();
+
+  // Firebase: o/<encoded-filename>?alt=media...
+  const firebaseMatch = lc.match(/o\/([^?]+)/);
+  const fileName = firebaseMatch ? firebaseMatch[1] : lc;
+
+  // Strip encoding (e.g. "Reading%20Test.pdf" → "Reading Test.pdf")
+  const decoded = decodeURIComponent(fileName);
+
+  if (/\.pdf(\?|$|#|$)/i.test(decoded)) return 'pdf';
+  if (/\.(png|jpe?g|webp|gif|bmp|svg)(\?|$|#|$)/i.test(decoded)) return 'image';
+  return 'unsupported';
 }
 
 function useObjectUrlFromFile(file: File | null): string | null {
@@ -102,9 +127,12 @@ export function SourceDocumentViewer({ skill, sourceFile, sourceDocument, listen
   const previewSourceFile = sourceFile || sourceDocument?.file || null;
   const objectUrl = useObjectUrlFromFile(previewSourceFile);
 
+  const sourceDataUrl = sourceDocument?.dataUrl ?? null;
+
   const mode = useMemo(() => {
     if (skill === 'listening') return 'listening';
     if (!previewSourceFile && !sourceDocument) return 'empty';
+    if (sourceDataUrl) return detectModeFromDataUrl(sourceDataUrl);
     if (previewSourceFile && isPdfLike(previewSourceFile.name, previewSourceFile.type)) return 'pdf';
     if (previewSourceFile && isImageLike(previewSourceFile.name, previewSourceFile.type)) return 'image';
     if (previewSourceFile && isWordLike(previewSourceFile.name, previewSourceFile.type)) return 'unsupported';
@@ -112,37 +140,27 @@ export function SourceDocumentViewer({ skill, sourceFile, sourceDocument, listen
     if (sourceDocument && isImageLike(sourceDocument.name, sourceDocument.type)) return 'image';
     if (sourceDocument && isWordLike(sourceDocument.name, sourceDocument.type)) return 'unsupported';
     return 'unsupported';
-  }, [previewSourceFile, skill, sourceDocument]);
+  }, [previewSourceFile, skill, sourceDocument, sourceDataUrl]);
+
+  const previewSrc = useMemo(() => {
+    if (objectUrl) return objectUrl;
+    if (sourceDataUrl) return sourceDataUrl;
+    return null;
+  }, [objectUrl, sourceDataUrl]);
 
   const listeningFiles = useMemo(() => listeningAudioFiles.filter(Boolean), [listeningAudioFiles]);
 
   return (
     <div className="source-viewer-card">
       <div className="source-viewer-head">
-        <div>
-          <h3 className="source-viewer-title">
-            {skill === 'listening' ? 'Listening Preview' : 'Source Preview'}
-          </h3>
-          <p className="source-viewer-subtitle">
-            {skill === 'listening'
-              ? 'Four audio files are previewed here. The extraction PDF/image stays separate.'
-              : 'Left pane for visual cross-check while editing extracted answers.'}
-          </p>
-        </div>
+        <h3 className="source-viewer-title">
+          {skill === 'listening' ? 'Listening Preview' : 'Source Preview'}
+        </h3>
       </div>
-
-      {skill !== 'listening' && sourceDocument ? (
-        <div className="source-viewer-file-meta">
-          <div className="source-viewer-file-name">{sourceDocument.name}</div>
-          <div className="source-viewer-file-size">
-            {sourceDocument.size ? `${Math.max(1, Math.round(sourceDocument.size / 1024))} KB` : 'Extraction source'}
-          </div>
-        </div>
-      ) : null}
 
       {skill === 'listening' && sourceDocument ? (
         <p className="source-viewer-subnote">
-          Extraction source loaded separately for question generation.
+          Listening source loaded separately for question generation.
         </p>
       ) : null}
 
@@ -153,18 +171,18 @@ export function SourceDocumentViewer({ skill, sourceFile, sourceDocument, listen
           </div>
         ) : null}
 
-        {mode === 'pdf' && objectUrl ? (
+        {mode === 'pdf' && previewSrc ? (
           <iframe
             title="Source PDF preview"
-            src={`${objectUrl}#toolbar=0&navpanes=0&scrollbar=1`}
+            src={`${previewSrc}#toolbar=0&navpanes=0&scrollbar=1`}
             className="source-viewer-iframe"
           />
         ) : null}
 
-        {mode === 'image' && objectUrl ? (
+        {mode === 'image' && previewSrc ? (
           <div className="source-viewer-image-wrap">
             <Image
-              src={objectUrl}
+              src={previewSrc}
               alt="Uploaded source"
               fill
               unoptimized

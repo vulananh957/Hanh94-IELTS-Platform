@@ -6,19 +6,6 @@
 export type Skill = 'listening' | 'reading' | 'writing' | string;
 export type Answers = Record<string, string>;
 
-export type QuestionResult = {
-  questionId: string;
-  questionDisplayName: string;
-  studentAnswer: string;
-  correctAnswer: string;
-  isCorrect: boolean;
-  score: number;
-  maxScore: number;
-  isMultipleChoice?: boolean;
-  wordCount?: number;
-  minRequired?: number;
-};
-
 export type TestData = {
   id: string;
   name?: string;
@@ -174,6 +161,63 @@ export function calculateScore(userAnswer: unknown, accepted: unknown[]): number
     : calculateSingleAnswerScore(userAnswer, accepted);
 }
 
+/* ── Test metadata helpers ──────────────────────────────────────── */
+
+function toPositiveInt(value: unknown, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  return {};
+}
+
+function asArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  return [];
+}
+
+export function countTotalQuestionsFromMetadata(test: TestData): number {
+  const metadata = asRecord(test?.metadata);
+  const parts = asArray(metadata?.parts);
+
+  if (parts.length === 0) {
+    // Fallback: count keys in answerKey
+    const ak = test?.answerKey;
+    if (ak && typeof ak === 'object') return Object.keys(ak).length;
+    return 0;
+  }
+
+  let total = 0;
+
+  for (const part of parts) {
+    const partRec = asRecord(part);
+    const questionTypes = asArray(partRec.questionTypes ?? partRec.sections);
+    for (const qt of questionTypes) {
+      const qtRec = asRecord(qt);
+      const typeName = String(qtRec.type ?? qtRec.label ?? qtRec.kind ?? '');
+      const questions = asArray(qtRec.questions ?? qtRec.items);
+
+      if (/multiple choice.*choose multiple/i.test(typeName)) {
+        // Each question = choiceCount sub-items
+        for (const q of questions) {
+          const qRec = asRecord(q);
+          total += toPositiveInt(qRec.choiceCount, 2);
+        }
+      } else {
+        // Each question = 1 item
+        total += Math.max(
+          toPositiveInt(qtRec.questionCount, 0),
+          questions.length,
+        );
+      }
+    }
+  }
+
+  return total;
+}
+
 export function calculateIELTSBand(correctAnswers: number, skill: Skill): number {
   const scoreMap: Record<number, number> = {
     39: 9.0, 40: 9.0,
@@ -190,6 +234,7 @@ export function calculateIELTSBand(correctAnswers: number, skill: Skill): number
     7: 3.5, 8: 3.5, 9: 3.5,
     5: 3.0, 6: 3.0,
     3: 2.5, 4: 2.5,
+    1: 2.0, 2: 2.0,
   };
 
   const safeSkill = normalizeSkill(skill);
@@ -199,104 +244,5 @@ export function calculateIELTSBand(correctAnswers: number, skill: Skill): number
     if (scoreMap[answers] !== undefined) return scoreMap[answers];
   }
 
-  return 0;
-}
-
-/* ── Question Results ─────────────────────────────────────────────── */
-
-export function generateQuestionResults(test: TestData, answers: Answers): QuestionResult[] {
-  if (normalizeSkill(test.skill) === 'writing') {
-    const task1 = answers.writingTask1 || '';
-    const task2 = answers.writingTask2 || '';
-    const task1Words = task1.trim() ? task1.trim().split(/\s+/).length : 0;
-    const task2Words = task2.trim() ? task2.trim().split(/\s+/).length : 0;
-
-    return [
-      {
-        questionId: 'writingTask1',
-        questionDisplayName: 'Writing Task 1',
-        studentAnswer: task1 || 'No answer',
-        correctAnswer: 'Manual grading required',
-        isCorrect: task1Words >= 150,
-        score: task1Words >= 150 ? 1 : 0,
-        maxScore: 1,
-        wordCount: task1Words,
-        minRequired: 150,
-      },
-      {
-        questionId: 'writingTask2',
-        questionDisplayName: 'Writing Task 2',
-        studentAnswer: task2 || 'No answer',
-        correctAnswer: 'Manual grading required',
-        isCorrect: task2Words >= 250,
-        score: task2Words >= 250 ? 1 : 0,
-        maxScore: 1,
-        wordCount: task2Words,
-        minRequired: 250,
-      },
-    ];
-  }
-
-  const answerKey = test.answerKey || {};
-  const groupKeys = Object.keys(answers).filter((key) => key.includes('-'));
-  const processedGroups = new Set<string>();
-  const results: QuestionResult[] = [];
-
-  Object.keys(answerKey).forEach((qid) => {
-    const accepted = Array.isArray(answerKey[qid]) ? answerKey[qid] as string[] : [answerKey[qid] as string];
-    const currentQid = parseInt(qid, 10);
-
-    const shouldProcess = groupKeys.some((groupKey) => {
-      const [start] = groupKey.split('-').map(Number);
-      return currentQid === start;
-    }) || !groupKeys.some((groupKey) => {
-      const [start, end] = groupKey.split('-').map(Number);
-      return currentQid >= start && currentQid <= end;
-    });
-
-    if (!shouldProcess) return;
-
-    const isGroup = groupKeys.some((groupKey) => {
-      const [start, end] = groupKey.split('-').map(Number);
-      return currentQid >= start && currentQid <= end;
-    });
-
-    if (isGroup) {
-      const acceptedChoices = accepted.flatMap((item) => splitAnswerTokens(item));
-      const startNum = currentQid;
-      const endNum = startNum + acceptedChoices.length - 1;
-      const groupId = `${startNum}-${endNum}`;
-
-      if (processedGroups.has(groupId)) return;
-      processedGroups.add(groupId);
-
-      const studentAnswer = answers[groupId] || '';
-      const score = calculateScore(studentAnswer, accepted);
-      results.push({
-        questionId: groupId,
-        questionDisplayName: `Question ${startNum}-${endNum}`,
-        studentAnswer: studentAnswer || 'No answer',
-        correctAnswer: String(answerKey[qid]),
-        isCorrect: score >= acceptedChoices.length,
-        score,
-        maxScore: acceptedChoices.length,
-        isMultipleChoice: true,
-      });
-      return;
-    }
-
-    const studentAnswer = answers[qid] || '';
-    const score = calculateSingleAnswerScore(studentAnswer, accepted);
-    results.push({
-      questionId: qid,
-      questionDisplayName: `Question ${qid}`,
-      studentAnswer: studentAnswer || 'No answer',
-      correctAnswer: String(answerKey[qid]),
-      isCorrect: score > 0,
-      score,
-      maxScore: 1,
-    });
-  });
-
-  return results;
+  return correctAnswers > 0 ? 0 : 0;
 }

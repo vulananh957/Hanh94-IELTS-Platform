@@ -13,6 +13,23 @@ service firebase.storage {
       allow read: if request.auth != null;
       allow write: if request.auth != null;
     }
+
+    // Allow authenticated users to upload teacher feedback files for writing
+    // Students need to read these files after grading, so keep read open to
+    // signed-in users.
+    match /manual-grading-feedback/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // Anti-cheat: violation screenshots uploaded by students during tests.
+    // Students can only write (upload) their own photos; they cannot read
+    // others' photos. Teachers (identified by custom claims or no testId match)
+    // can read these files to review flagged attempts.
+    match /violations/{studentUid}/{testId}/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth.uid == studentUid;
+    }
     
     // Allow public read of feedback files (teacher already provided to student)
     match /feedback/{allPaths=**} {

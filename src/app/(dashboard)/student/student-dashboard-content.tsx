@@ -277,6 +277,16 @@ export function StudentDashboardContent() {
     loadData();
   }, [user?.email, loadData]);
 
+  // Reload if a test was just submitted (signal from take-test page)
+  useEffect(() => {
+    if (!user?.email) return;
+    const signal = `needs_refresh_${user.email}`;
+    if (sessionStorage.getItem(signal) === '1') {
+      sessionStorage.removeItem(signal);
+      loadData(true);
+    }
+  }, [user?.email, loadData]);
+
   // Sidebar close on outside click
   useEffect(() => {
     if (!sidebarOpen) return;

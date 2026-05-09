@@ -26,19 +26,16 @@ export function FallbackQuestionTypeSelect({
   const options = getOptions(skill);
 
   return (
-    <label className="review-control review-control-tight">
-      <span className="review-control-label">Change Question Type</span>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value as LegacyQuestionType)}
-        className="review-control-input review-control-input-compact"
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    </label>
+    <select
+      value={value}
+      onChange={(event) => onChange(event.target.value as LegacyQuestionType)}
+      className="review-control-input review-control-input-compact"
+    >
+      {options.map((option) => (
+        <option key={option} value={option}>
+          {option}
+        </option>
+      ))}
+    </select>
   );
 }

@@ -1,12 +1,8 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { getFirestore, doc, getDoc, updateDoc } from 'firebase/firestore';
+import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
-import { calculateObjectiveScore } from '@/lib/score-calculator';
-import { calculateIELTSBand } from '@/app/(dashboard)/student/take-test/take-test-utils';
-import type { ObjectiveTestResult } from '@/services/student-objective-tests';
-import type { TestPart } from '@/features/upload-test/types';
 
 /* ── types ─────────────────────────────────────────────────────── */
 interface AnswerRow {
@@ -35,21 +31,19 @@ interface TestMaterial {
   passageText: string;
 }
 
-const EMPTY_MATERIAL: TestMaterial = {
-  pdfUrls: [],
-  audioUrls: [],
-  passageText: '',
-};
-
-interface ObjDrawerProps {
-  test: ObjectiveTestResult;
+interface TeacherResultDetailDrawerProps {
+  testResultId: string;
+  testId: string;
+  testName: string;
+  skill: 'reading' | 'listening';
+  studentName: string;
+  className: string;
   index: number;
   onClose: () => void;
   onPrev?: () => void;
   onNext?: () => void;
   hasPrev: boolean;
   hasNext: boolean;
-  onComputedResult?: (result: { correctAnswers: number; totalQuestions: number; band: number }) => void;
 }
 
 /* ── helpers ───────────────────────────────────────────────────── */
@@ -98,22 +92,29 @@ function matchAnswer(student: string, correct: string, type = ''): boolean {
   const s = normalize(student);
   if (!s) return false;
 
-  // Extract leading letter BEFORE normalizing so we catch "E." in answer keys like "E. People..."
   const keyLetter = student.match(/^[A-Z](?:\.|\s)/)?.[0]?.toUpperCase()
-    ?? correct.match(/^[A-Z](?:\.|\s)/)?.[0]?.toUpperCase();
-  const stuLetter = student.match(/^[A-Z](?:\.|\s)/)?.[0]?.toUpperCase();
+    ?? student.charAt(0).toUpperCase();
 
-  if (keyLetter && stuLetter) {
-    return keyLetter === stuLetter;
+  if (/^[A-Z](?:\.|\s|$)/.test(student.trim())) {
+    const accepted = splitAnswerTokens(correct);
+    if (accepted.some((c) => s === normalize(c) || s.startsWith(normalize(c)))) return true;
+    const corrected = accepted.map((a) => normalize(a).replace(/[^a-z0-9]/gi, ''));
+    const normS = normalize(s).replace(/[^a-z0-9]/gi, '');
+    if (corrected.some((c) => normS === c || normS.startsWith(c))) return true;
+    const plainKey = keyLetter.toUpperCase();
+    if (accepted.some((a) => normalize(a).startsWith(plainKey))) return true;
   }
 
-  // Support "/" as a separator for multiple accepted answers (e.g., "six/6")
-  const acceptedAnswers = correct
-    .split('/')
-    .map((token) => normalize(token.trim()))
-    .filter(Boolean);
-
-  return acceptedAnswers.some((c) => s === c);
+  // Split on the same delimiters so "mail order" matches "MAIL ORDER"
+  const studentTokens = splitAnswerTokens(student);
+  const acceptedAnswers = splitAnswerTokens(correct);
+  if (
+    studentTokens.length === acceptedAnswers.length &&
+    studentTokens.every((tok) => acceptedAnswers.includes(tok))
+  ) {
+    return true;
+  }
+  return acceptedAnswers.some((c) => s === normalize(c));
 }
 
 function formatCorrectAnswer(question: Record<string, unknown>, typeName: string): string {
@@ -123,7 +124,6 @@ function formatCorrectAnswer(question: Record<string, unknown>, typeName: string
       .filter(Boolean);
     if (answers.length > 0) return answers.join(' ');
   }
-
   return txt(
     question.correctAnswer
     ?? (asArray(question.correctAnswers).length > 0 ? asArray(question.correctAnswers)[0] : '')
@@ -167,46 +167,41 @@ function getSubAnswerScore(
   const matchedTokens = studentTokens.filter((t) =>
     correctAnswerTokens.some((c) => matchAnswer(t, c)),
   );
-  const score = Math.min(matchedTokens.length, correctAnswerTokens.length);
-  return { score, matchedTokens };
+
+  return { score: matchedTokens.length, matchedTokens };
 }
 
-function isLikelyUrl(value: string): boolean {
-  const text = value.trim().toLowerCase();
+function isLikelyUrl(v: string): boolean {
+  return /^https?:\/\//i.test(v) || /\.(pdf|png|jpg|jpeg|gif|mp3|wav|ogg|webm|mp4|m4a)(\?|$|#)/i.test(v);
+}
+
+function isAudioUrl(v: string): boolean {
   return (
-    text.startsWith('http://') ||
-    text.startsWith('https://') ||
-    text.startsWith('gs://') ||
-    text.startsWith('/') ||
-    text.includes('/o/') ||
-    text.includes('%2f')
+    /\.(mp3|wav|ogg|webm|mp4|m4a)(\?|$|#)/i.test(v) ||
+    /\/audios\//i.test(v) ||
+    /\/audio/i.test(v)
   );
 }
 
-function isAudioUrl(value: string): boolean {
-  const text = value.trim().toLowerCase();
-  return /\.(mp3|wav|m4a|ogg|aac|webm)(\?|#|$)/.test(text) || (isLikelyUrl(text) && text.includes('audio'));
-}
-
-function isPdfUrl(value: string): boolean {
-  const text = value.trim().toLowerCase();
-  return /\.pdf(\?|#|$)/.test(text) || (isLikelyUrl(text) && text.includes('pdf'));
+function isPdfUrl(v: string): boolean {
+  return (
+    /\.pdf(\?|$|#)/i.test(v) ||
+    /\/pdfs\//i.test(v) ||
+    /\/pdf/i.test(v)
+  );
 }
 
 function collectRawStrings(value: unknown, output: string[], depth = 0): void {
-  if (depth > 7 || value == null) return;
-
-  if (typeof value === 'string') {
-    const text = value.trim();
-    if (text) output.push(text);
+  if (depth > 6 || !value) return;
+  if (typeof value === 'string' && isLikelyUrl(value)) {
+    output.push(value);
     return;
   }
-
+  if (typeof value !== 'object') return;
   if (Array.isArray(value)) {
     value.forEach((item) => collectRawStrings(item, output, depth + 1));
     return;
   }
-
   const record = asRecord(value);
   Object.values(record).forEach((item) => collectRawStrings(item, output, depth + 1));
 }
@@ -214,19 +209,17 @@ function collectRawStrings(value: unknown, output: string[], depth = 0): void {
 function collectMediaUrls(values: unknown[], kind: 'any' | 'audio' | 'pdf' = 'any'): string[] {
   const strings: string[] = [];
   values.forEach((value) => collectRawStrings(value, strings));
-
   const filtered = strings.filter((item) => {
     if (kind === 'audio') return isAudioUrl(item);
     if (kind === 'pdf') return isPdfUrl(item);
     return isLikelyUrl(item);
   });
-
   return Array.from(new Set(filtered));
 }
 
 function buildTestMaterial(
   testData: Record<string, unknown> | null,
-  skill: ObjectiveTestResult['skill'],
+  skill: 'reading' | 'listening',
 ): TestMaterial {
   const record = asRecord(testData);
   const files = asRecord(record?.files);
@@ -302,25 +295,20 @@ function buildSections(
             const endNumber = startNumber + choiceCount - 1;
             const groupLabel = formatQuestionLabel(startNumber, endNumber);
 
-            // Get the full correct answer string (e.g. "A B" for a 2-item group)
             const rawCorrect = formatCorrectAnswer(questionRec, typeName) || answerKey[String(startNumber)] || '';
-            // Build per-sub-question correct answers: "A", "B" → ["A", "B"]
             const correctAnswerTokens = Array.from(new Set(splitAnswerTokens(rawCorrect)));
 
             let groupTotalScore = 0;
             const studentSubAnswers: string[] = [];
-            // Per-sub-question correct answers for display
             const subCorrectAnswers: string[] = [];
 
             for (let subIdx = 0; subIdx < choiceCount; subIdx++) {
               const subNum = startNumber + subIdx;
               const correctToken = correctAnswerTokens[subIdx] || '';
               subCorrectAnswers.push(correctToken);
-              // take-test stores grouped answers under the group key (e.g. "17-18"), not individual keys
               const groupKey = `${startNumber}-${startNumber + choiceCount - 1}`;
               const subScore = getSubAnswerScore(studentAnswers, startNumber, choiceCount, [correctToken]).score;
               groupTotalScore += subScore;
-              // Extract the student's answer for this sub-question from the group answer string
               const groupAnswer = studentAnswers[groupKey] || '';
               const studentTokens = Array.from(new Set(splitAnswerTokens(groupAnswer)));
               const subAnswer = studentTokens[subIdx] || '';
@@ -410,22 +398,27 @@ function buildSections(
 }
 
 /* ── component ─────────────────────────────────────────────────── */
-export function ObjectiveTestDrawer({
-  test,
+export function TeacherResultDetailDrawer({
+  testResultId,
+  testId,
+  testName,
+  skill,
+  studentName,
+  className,
   index,
   onClose,
   onPrev,
   onNext,
   hasPrev,
   hasNext,
-  onComputedResult,
-}: ObjDrawerProps) {
+}: TeacherResultDetailDrawerProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sections, setSections] = useState<Section[]>([]);
   const [totalCorrect, setTotalCorrect] = useState(0);
   const [totalQuestions, setTotalQuestions] = useState(0);
-  const [material, setMaterial] = useState<TestMaterial>(EMPTY_MATERIAL);
+  const [computedBand, setComputedBand] = useState(0);
+  const [material, setMaterial] = useState<TestMaterial>({ pdfUrls: [], audioUrls: [], passageText: '' });
 
   const fetchDetail = useCallback(async () => {
     setLoading(true);
@@ -434,73 +427,59 @@ export function ObjectiveTestDrawer({
     try {
       const db = getFirestore(firebaseApp);
 
-      // 1) Fetch both docs in parallel
-      const [trSnap, testSnap] = await Promise.all([
-        getDoc(doc(db, 'testResults', test.id)),
-        getDoc(doc(db, 'tests', test.testId)),
-      ]);
+      // 1) Fetch testResult doc to get the correct testId
+      const trSnap = await getDoc(doc(db, 'testResults', testResultId));
       const trData = trSnap.exists() ? (trSnap.data() as Record<string, unknown>) : null;
+      if (!trData) {
+        setError('Result not found.');
+        setLoading(false);
+        return;
+      }
+
+      // Use testId from the result doc, not the passed prop (they may differ)
+      const actualTestId = String(trData.testId ?? testId ?? '');
+      if (!actualTestId) {
+        setError('Test ID not found in result.');
+        setLoading(false);
+        return;
+      }
+
+      // 2) Fetch the test doc
+      const testSnap = await getDoc(doc(db, 'tests', actualTestId));
       const testData = testSnap.exists() ? (testSnap.data() as Record<string, unknown>) : null;
 
-      if (!trData && !testData) {
+      if (!testData) {
         setError('Test data not found. The test may have been deleted.');
         setLoading(false);
         return;
       }
 
-      setMaterial(buildTestMaterial(testData, test.skill));
+      // Pull ieltsBand / correctAnswers / totalQuestions directly from testResults — already
+      // computed at submission time (or by updateTest API when answers were edited).
+      const totalCorrect = Number(trData.correctAnswers ?? trData.correct ?? 0);
+      const totalQuestions = Number(trData.totalQuestions ?? trData.total ?? 0);
+      const band = Number(trData.ieltsBand ?? trData.band ?? 0);
+      setTotalQuestions(totalQuestions);
+      setTotalCorrect(totalCorrect);
+      setComputedBand(band);
+      setMaterial(buildTestMaterial(testData, skill));
 
-      // Extract answer key from tests doc
-      const answerKey = flattenAnswerKey(testData?.answerKey);
-
-      // Extract student answers from testResults doc
-      const studentAnswers = flattenStudentAnswers(trData?.answers);
-
-      // Build sections for display
+      // buildSections for per-question display (answers + answerKey → isCorrect)
+      const answerKey = flattenAnswerKey(testData.answerKey);
+      const studentAnswers = flattenStudentAnswers(trData.answers);
       const builtSections = buildSections(testData, answerKey, studentAnswers);
       setSections(builtSections);
-
-      // Also compute and persist the summary scores using the shared calculator
-      const testParts = asArray(asRecord(testData?.metadata)?.parts) as TestPart[];
-      if (testParts.length > 0 && trData) {
-        const { correctAnswers, totalQuestions, band } = calculateObjectiveScore({
-          answers: flattenStudentAnswers(trData?.answers),
-          answerKey,
-          parts: testParts,
-          skill: test.skill,
-        });
-
-        setTotalQuestions(totalQuestions);
-        setTotalCorrect(correctAnswers);
-
-        await updateDoc(doc(db, 'testResults', test.id), {
-          ieltsBand: band,
-          correctAnswers,
-          totalQuestions,
-        });
-      } else {
-        const allRows = builtSections.flatMap((s) => s.rows);
-        setTotalCorrect(allRows.reduce((t, r) => t + r.score, 0));
-        setTotalQuestions(allRows.reduce((t, r) => t + r.maxScore, 0));
-      }
     } catch (err) {
-      console.error('[OBJ DRAWER]', err);
+      console.error('[TeacherResultDetailDrawer]', err);
       setError('Failed to load test details.');
     } finally {
       setLoading(false);
     }
-  }, [test.id, test.testId, test.skill]);
+  }, [testResultId, testId, skill]);
 
   useEffect(() => {
     fetchDetail();
   }, [fetchDetail]);
-
-  // Report computed result to parent so list cards use correct (not Firestore-stored) values
-  useEffect(() => {
-    if (!onComputedResult || totalCorrect === 0 && totalQuestions === 0) return;
-    const band = totalCorrect > 0 ? calculateIELTSBand(totalCorrect, test.skill as 'reading' | 'listening') : 0;
-    onComputedResult({ correctAnswers: totalCorrect, totalQuestions, band });
-  }, [totalCorrect, totalQuestions, test.skill, onComputedResult]);
 
   // Keyboard nav
   useEffect(() => {
@@ -520,13 +499,12 @@ export function ObjectiveTestDrawer({
   }, []);
 
   const pct = totalQuestions > 0 ? Math.round((totalCorrect / totalQuestions) * 100) : 0;
-  const computedBand = totalCorrect > 0 ? calculateIELTSBand(totalCorrect, test.skill) : 0;
-  const materialTitle = test.skill === 'reading' ? 'Reading material' : 'Listening audio';
-  const materialSubtitle = test.skill === 'reading'
+  const materialTitle = skill === 'reading' ? 'Reading material' : 'Listening audio';
+  const materialSubtitle = skill === 'reading'
     ? 'Source file shown to the student during the reading test.'
     : 'Source tracks used for the listening test.';
-  const materialItems = test.skill === 'reading' ? material.pdfUrls : material.audioUrls;
-  const hasMaterial = materialItems.length > 0 || (test.skill === 'reading' && Boolean(material.passageText));
+  const materialItems = skill === 'reading' ? material.pdfUrls : material.audioUrls;
+  const hasMaterial = materialItems.length > 0 || (skill === 'reading' && Boolean(material.passageText));
 
   return (
     <div className="obj-drawer-overlay" onClick={onClose}>
@@ -540,7 +518,8 @@ export function ObjectiveTestDrawer({
             </button>
             <div className="obj-drawer-title-block">
               <span className="obj-drawer-num">#{index}</span>
-              <h2 className="obj-drawer-title">{test.testName}</h2>
+              <h2 className="obj-drawer-title">{testName}</h2>
+              <span className="obj-drawer-student-meta">{studentName}{className && className !== 'No Class' ? ` — ${className}` : ''}</span>
             </div>
           </div>
           <div className="obj-drawer-nav">
@@ -548,7 +527,7 @@ export function ObjectiveTestDrawer({
               className="obj-nav-btn"
               disabled={!hasPrev}
               onClick={onPrev}
-              title="Previous result"
+              title="Previous student"
             >
               <i className="fas fa-chevron-left" />
             </button>
@@ -556,7 +535,7 @@ export function ObjectiveTestDrawer({
               className="obj-nav-btn"
               disabled={!hasNext}
               onClick={onNext}
-              title="Next result"
+              title="Next student"
             >
               <i className="fas fa-chevron-right" />
             </button>
@@ -582,7 +561,7 @@ export function ObjectiveTestDrawer({
 
           {!loading && !error && (
             <div className="obj-drawer-split">
-              <aside className={`obj-material-pane ${test.skill}`}>
+              <aside className={`obj-material-pane ${skill}`}>
                 <div className="obj-material-header">
                   <div>
                     <div className="obj-material-kicker">Test material</div>
@@ -598,7 +577,7 @@ export function ObjectiveTestDrawer({
                     {materialSubtitle}
                   </p>
 
-                  {test.skill === 'reading' && material.pdfUrls.length > 0 && (
+                  {skill === 'reading' && material.pdfUrls.length > 0 && (
                     <>
                       <div className="obj-material-links">
                         {material.pdfUrls.map((url, materialIndex) => (
@@ -625,11 +604,11 @@ export function ObjectiveTestDrawer({
                     </>
                   )}
 
-                  {test.skill === 'reading' && material.pdfUrls.length === 0 && material.passageText && (
+                  {skill === 'reading' && material.pdfUrls.length === 0 && material.passageText && (
                     <div className="obj-material-text">{material.passageText}</div>
                   )}
 
-                  {test.skill === 'listening' && material.audioUrls.length > 0 && (
+                  {skill === 'listening' && material.audioUrls.length > 0 && (
                     <div className="obj-material-audio-stack">
                       {material.audioUrls.map((url, materialIndex) => (
                         <div className="obj-material-audio-card" key={url}>
@@ -699,11 +678,11 @@ export function ObjectiveTestDrawer({
                     <div className="obj-summary-meta">
                       <div className="obj-summary-meta-row">
                         <span className="obj-summary-meta-label">Skill</span>
-                        <span className={`obj-skill-tag ${test.skill}`}>{test.skill.toUpperCase()}</span>
+                        <span className={`obj-skill-tag ${skill}`}>{skill.toUpperCase()}</span>
                       </div>
                       <div className="obj-summary-meta-row">
-                        <span className="obj-summary-meta-label">Date</span>
-                        <span>{test.completedAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                        <span className="obj-summary-meta-label">Student</span>
+                        <span>{studentName}</span>
                       </div>
                     </div>
                   </div>
@@ -722,7 +701,11 @@ export function ObjectiveTestDrawer({
                         <div className="obj-section-part">{section.title}</div>
                         <div className="obj-section-header">
                           <div className="obj-section-header-main">
-                            <h3 className="obj-section-title">{section.blocks.length > 1 ? 'Mixed question types' : (section.blocks[0]?.type || 'Questions')}</h3>
+                            <h3 className="obj-section-title">
+                              {section.blocks.length > 1
+                                ? 'Mixed question types'
+                                : (section.blocks[0]?.type || 'Questions')}
+                            </h3>
                             <p className="obj-section-note">
                               {section.blocks.length > 1
                                 ? `${section.blocks.length} question types in this ${section.title.toLowerCase()}`
@@ -730,7 +713,8 @@ export function ObjectiveTestDrawer({
                             </p>
                           </div>
                           <span className="obj-section-score">
-                            {section.rows.reduce((total, row) => total + row.score, 0)}/{section.rows.reduce((total, row) => total + row.maxScore, 0)}
+                            {section.rows.reduce((total, row) => total + row.score, 0)}/
+                            {section.rows.reduce((total, row) => total + row.maxScore, 0)}
                           </span>
                         </div>
                         <div className="obj-part-blocks">
@@ -742,7 +726,8 @@ export function ObjectiveTestDrawer({
                                   {block.subtitle && <p className="obj-part-block-note">{block.subtitle}</p>}
                                 </div>
                                 <span className="obj-part-block-score">
-                                  {block.rows.reduce((total, row) => total + row.score, 0)}/{block.rows.reduce((total, row) => total + row.maxScore, 0)}
+                                  {block.rows.reduce((total, row) => total + row.score, 0)}/
+                                  {block.rows.reduce((total, row) => total + row.maxScore, 0)}
                                 </span>
                               </div>
                               <div className="obj-answer-grid">

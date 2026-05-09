@@ -108,6 +108,9 @@
   padding: 0.68rem 1.15rem;
   cursor: pointer;
   transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
 }
 
 .refresh-btn:hover:not(:disabled) {
@@ -118,6 +121,39 @@
 .refresh-btn:disabled {
   opacity: 0.65;
   cursor: not-allowed;
+}
+
+.bulk-download-btn {
+  border: none;
+  border-radius: 10px;
+  background: #0f766e;
+  color: var(--white);
+  font-weight: 700;
+  padding: 0.68rem 1.15rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+
+.bulk-download-btn:hover:not(:disabled) {
+  background: #065f54;
+  transform: translateY(-1px);
+}
+
+.bulk-download-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.grading-table input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #0f766e;
 }
 
 .manual-error,

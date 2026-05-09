@@ -788,13 +788,13 @@ export function UploadTestWorkbench() {
             </select>
           </label>
 
-          <label className="workbench-field">
-            <span className="field-label">Test Name</span>
+          <div className="workbench-test-name-row">
+            <span className="workbench-test-name-label">Test Name:</span>
             <input
               value={draft.testName}
               onChange={(event) => setTestName(event.target.value)}
               placeholder="IELTS Reading Practice Test"
-              className={`workbench-input ${
+              className={`workbench-test-name-input ${
                 testNameStatus === 'duplicate' || testNameStatus === 'error' ? 'workbench-input-invalid' : ''
               }`}
               aria-invalid={testNameStatus === 'duplicate' || testNameStatus === 'error'}
@@ -814,7 +814,7 @@ export function UploadTestWorkbench() {
             ) : (
               <span className="workbench-field-note">Name must be unique across Test Hub.</span>
             )}
-          </label>
+          </div>
 
           {draft.skill === 'writing' ? (
             <>

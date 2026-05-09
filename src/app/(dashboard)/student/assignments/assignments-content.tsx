@@ -346,7 +346,7 @@ export function AssignmentsContent() {
                             </div>
                             <div>
                               <span>Last activity</span>
-                              <strong>{timeAgo(assignment.lastActivityAt ?? assignment.createdAt)}</strong>
+                              <strong>{assignment.lastActivityAt ? timeAgo(assignment.lastActivityAt) : '—'}</strong>
                             </div>
                             {isCompleted ? (
                               <div>

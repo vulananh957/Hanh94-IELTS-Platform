@@ -43,7 +43,6 @@ export function PartEditorPanel({ part, partIndex, skill }: PartEditorPanelProps
 
         <div className="review-part-actions">
           <label className="review-control">
-            <span className="review-control-label">Add New Group</span>
             <select
               value={pendingType}
               onChange={(event) => setPendingType(event.target.value as LegacyQuestionType)}

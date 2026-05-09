@@ -4,6 +4,8 @@ import {
   query,
   where,
   getDocs,
+  getDoc,
+  doc,
   orderBy,
   limit,
   documentId,
@@ -66,7 +68,7 @@ export function invalidateDashboardDataCache(teacherEmail: string): void {
 /**
  * Batch fetch documents by IDs with 10-ID limit handling
  */
-async function batchGetDocuments(
+async function batchGetDocumentsById(
   db: ReturnType<typeof getFirestore>,
   collectionName: string,
   ids: Set<string>
@@ -98,11 +100,11 @@ async function batchGetDocuments(
 }
 
 /**
- * Batch fetch documents by email field
+ * Batch fetch user documents by email field.
+ * Falls back to document-ID lookup if the email-field query fails.
  */
-async function batchGetDocumentsByEmail(
+async function batchGetUserDocuments(
   db: ReturnType<typeof getFirestore>,
-  collectionName: string,
   emails: Set<string>
 ): Promise<Map<string, any>> {
   if (emails.size === 0) return new Map();
@@ -116,15 +118,31 @@ async function batchGetDocumentsByEmail(
   }
 
   for (const chunk of chunks) {
+    // Primary: query by email field
     try {
-      const q = query(collection(db, collectionName), where('email', 'in', chunk));
+      const q = query(collection(db, 'users'), where('email', 'in', chunk));
       const snapshot = await getDocs(q);
-      snapshot.docs.forEach((doc) => {
-        const data = doc.data();
-        if (data.email) cache.set(data.email, data);
-      });
+      if (snapshot.docs.length > 0) {
+        snapshot.docs.forEach((doc) => {
+          const data = doc.data();
+          if (data.email) cache.set(data.email, data);
+        });
+        continue;
+      }
     } catch (error) {
-      console.log(`Error batch querying ${collectionName} by email:`, error);
+      console.log(`email-field query failed, falling back to doc ID:`, error);
+    }
+
+    // Fallback: treat each email as a document ID and fetch directly
+    for (const email of chunk) {
+      try {
+        const snap = await getDoc(doc(db, 'users', email));
+        if (snap.exists()) {
+          const data = snap.data();
+          cache.set(email, data);
+          if (data.email) cache.set(data.email, data);
+        }
+      } catch { /* ignore individual failures */ }
     }
   }
 
@@ -198,37 +216,152 @@ export async function calculateDashboardStats(teacherEmail: string): Promise<Das
     console.log('⚡ Starting parallel queries for dashboard stats...');
 
     // Launch ALL queries in parallel
-    const [testsSnapshot, attemptsSnapshot, writingGradedSnapshot, writingPendingSnapshot, usersSnapshot] = await Promise.all([
+    const [testsSnapshot, attemptsSnapshot, testResultsSnapshot, writingResultsSnapshot, writingLegacySnapshot, usersSnapshot] = await Promise.all([
       getDocs(query(collection(db, 'tests'))),
       getDocs(query(collection(db, 'attempts'), where('status', '==', 'completed'))),
-      getDocs(query(collection(db, 'writing'), where('status', '==', 'graded'))),
-      getDocs(query(collection(db, 'writing'), where('status', '==', 'pending'))),
+      getDocs(collection(db, 'testResults')),
+      getDocs(query(collection(db, 'testResults'), where('testType', '==', 'writing'))),
+      getDocs(collection(db, 'writing')),
       getDocs(collection(db, 'users')),
     ]);
 
     console.log('✅ All queries completed in', (performance.now() - perfStart).toFixed(0), 'ms');
 
-    // Build test cache for skill lookup
-    const testsCache = new Map();
+    // ── 2. Build test skill map from tests collection ───────────────────────────
+    const testsCache = new Map<string, any>();
     testsSnapshot.docs.forEach((doc) => {
       testsCache.set(doc.id, doc.data());
     });
 
     const totalTests = testsSnapshot.size;
 
-    // Deduplicate attempts - keep only latest per student-test
-    const latestAttempts = new Map<string, any>();
-    for (const attemptDoc of attemptsSnapshot.docs) {
-      const data = attemptDoc.data();
+    // ── 3. Deduplicate testResults by student+test (keep latest). ──────────────
+    // For objective results: keep latest by timestamp.
+    // For writing results: prefer the entry that has an actual score (teacher may have graded
+    // a submission while the system still records it as 'in_progress').
+    const latestResultsByKey = new Map<string, any>();
+    for (const resultDoc of testResultsSnapshot.docs) {
+      const data = resultDoc.data();
+      const skill = String(data.testType || data.skill || '').toLowerCase();
       const key = `${data.studentEmail}_${data.testId}`;
-      const completedAt = data.completedAt?.toDate?.() || new Date(data.completedAt);
+      const completedAt = data.completedAt?.toDate?.()
+        || data.submittedAt?.toDate?.()
+        || data.gradedAt?.toDate?.()
+        || new Date();
 
-      if (!latestAttempts.has(key) || completedAt > latestAttempts.get(key).completedAt) {
-        latestAttempts.set(key, { ...data, completedAt });
+      const existing = latestResultsByKey.get(key);
+      if (!existing) {
+        latestResultsByKey.set(key, { ...data, _skill: skill, _completedAt: completedAt });
+        continue;
+      }
+
+      const existingScore = existing.writingScore ?? existing.ieltsBand ?? null;
+      const newScore = data.writingScore ?? data.ieltsBand ?? null;
+
+      if (existingScore !== newScore) {
+        // Different scores — prefer the one with an actual score over a null/zero entry.
+        // This handles the case where the graded doc has score=8.5 but gets overwritten by
+        // an in_progress doc with score=null.
+        if (newScore !== null && newScore > 0 && (existingScore === null || existingScore === 0)) {
+          latestResultsByKey.set(key, { ...data, _skill: skill, _completedAt: completedAt });
+        }
+        // Otherwise keep existing.
+      } else {
+        // Same score (or both null) — keep latest by timestamp
+        if (completedAt > (existing._completedAt ?? new Date(0))) {
+          latestResultsByKey.set(key, { ...data, _skill: skill, _completedAt: completedAt });
+        }
       }
     }
 
-    // Get unique students - from ALL users collection for accurate count
+    console.log('[dashboard] testResults docs fetched:', testResultsSnapshot.docs.length);
+    console.log('[dashboard] latestResultsByKey total:', latestResultsByKey.size);
+    const writingEntries = [...latestResultsByKey.entries()].filter(([, d]) => d._skill === 'writing' || d._skill === 'default');
+    console.log('[dashboard] writing/default entries from testResults:', writingEntries.length);
+    for (const [key, data] of writingEntries) {
+      const score = data.writingScore ?? data.ieltsBand ?? null;
+      console.log(`  key=${key} skill=${data._skill} status=${data.status} score=${score} testType=${data.testType}`);
+    }
+
+    // Also check 'writing' collection
+    console.log('[dashboard] writing collection docs:', writingLegacySnapshot.docs.length);
+    for (const docSnap of writingLegacySnapshot.docs) {
+      const d = docSnap.data();
+      const score = d.writingScore ?? d.ieltsBand ?? null;
+      const status = String(d.status || '').toLowerCase();
+      console.log(`  writing_col: testId=${d.testId} student=${d.studentEmail} status=${status} score=${score}`);
+    }
+
+    // ── 4. Separate objective (listening/reading) from writing results ───────────
+    // For objective: testType is NOT writing. Use the deduped testResults as source.
+    const latestObjectiveResults = new Map<string, any>();
+    for (const [key, data] of latestResultsByKey) {
+      if (data._skill !== 'writing') {
+        latestObjectiveResults.set(key, data);
+      }
+    }
+
+    // For writing: prefer testResults entries that are writing, but also pull from
+    // the legacy 'writing' collection and merge. This ensures old submissions are preserved.
+    // We track writing entries separately with their raw status for the grader to process.
+    const latestWritingResults = new Map<string, any>();
+    for (const [key, data] of latestResultsByKey) {
+      if (data._skill === 'writing') {
+        const existing = latestWritingResults.get(key);
+        const existingRawStatus = existing ? String(existing.status || '').toLowerCase() : '';
+        const rawStatus = String(data.status || '').toLowerCase();
+        const existingScore = existing?.writingScore ?? existing?.ieltsBand ?? null;
+        const newScore = data.writingScore ?? data.ieltsBand ?? null;
+
+        if (!existing) {
+          latestWritingResults.set(key, data);
+        } else if (rawStatus === 'graded' && existingRawStatus !== 'graded') {
+          // Graded always beats non-graded
+          latestWritingResults.set(key, data);
+        } else if (rawStatus === 'graded' && existingRawStatus === 'graded' && existingScore !== newScore) {
+          // Same key, both graded — keep the one with the actual score (8.5 beats null/0)
+          latestWritingResults.set(key, data);
+        } else if (rawStatus === existingRawStatus && existingScore === null && newScore !== null) {
+          // Same status, but new entry has a score while existing doesn't
+          latestWritingResults.set(key, data);
+        }
+      }
+    }
+
+    // Merge writing submissions from the legacy 'writing' collection
+    writingLegacySnapshot.forEach((doc) => {
+      const data = doc.data();
+      const key = `${data.studentEmail}_${data.testId}`;
+      const submittedAt = data.submittedAt?.toDate?.()
+        || data.completedAt?.toDate?.()
+        || data.gradedAt?.toDate?.()
+        || new Date();
+
+      const existing = latestWritingResults.get(key);
+      const existingRawStatus = existing ? String(existing.status || '').toLowerCase() : '';
+      const rawStatus = String(data.status || '').toLowerCase();
+      const existingScore = existing?.writingScore ?? existing?.ieltsBand ?? null;
+      const newScore = data.writingScore ?? data.ieltsBand ?? null;
+
+      if (!existing) {
+        latestWritingResults.set(key, { ...data, _completedAt: submittedAt });
+      } else if (rawStatus === 'graded' && existingRawStatus !== 'graded') {
+        latestWritingResults.set(key, { ...data, _completedAt: submittedAt });
+      } else if (rawStatus === 'graded' && existingRawStatus === 'graded' && existingScore !== newScore) {
+        latestWritingResults.set(key, { ...data, _completedAt: submittedAt });
+      } else if (rawStatus === existingRawStatus && existingScore === null && newScore !== null) {
+        latestWritingResults.set(key, { ...data, _completedAt: submittedAt });
+      }
+    });
+
+    console.log('[dashboard] latestWritingResults:', latestWritingResults.size);
+    for (const [key, data] of latestWritingResults) {
+      const score = data.writingScore ?? data.ieltsBand ?? null;
+      const isG = isWritingGraded(data);
+      console.log(`  key=${key} status=${data.status} score=${score} isGraded=${isG}`);
+    }
+
+    // ── 5. Get unique students ─────────────────────────────────────────────────
     const allStudents = new Set<string>();
     usersSnapshot.docs.forEach((doc) => {
       const data = doc.data();
@@ -238,28 +371,32 @@ export async function calculateDashboardStats(teacherEmail: string): Promise<Das
     });
     const activeStudents = allStudents.size;
 
-    // Calculate skill scores from attempts
-    let totalScore = 0;
-    let attemptCount = 0;
+    // ── 6. Calculate skill stats from deduplicated objective results ────────────
     const skillStats = {
       listening: { total: 0, count: 0, average: 0 },
-      reading: { total: 0, count: 0, average: 0 },
-      writing: { total: 0, count: 0, average: 0 },
+      reading:   { total: 0, count: 0, average: 0 },
+      writing:   { total: 0, count: 0, average: 0 },
     };
 
-    for (const [key, attemptData] of latestAttempts) {
-      const score = attemptData.scores?.ieltsBand || attemptData.scores?.auto;
-      if (!score || score <= 0) continue;
+    // Score lookup: prefer ieltsBand (set by auto-grader), then scores.ieltsBand, then scores.auto
+    function getBandScore(data: any): number | null {
+      const band = data.ieltsBand ?? data.scores?.ieltsBand ?? data.scores?.auto ?? null;
+      return typeof band === 'number' && band > 0 ? band : null;
+    }
 
-      totalScore += score;
-      attemptCount++;
+    for (const [, resultData] of latestObjectiveResults) {
+      const score = getBandScore(resultData);
+      if (score === null) continue;
 
-      // Determine skill from test
+      // Resolve skill: from testType in result first, then from tests collection
       let skill: keyof typeof skillStats = 'reading';
-      if (attemptData.testId && testsCache.has(attemptData.testId)) {
-        const test = testsCache.get(attemptData.testId);
-        if (test.skill && ['listening', 'reading', 'writing'].includes(test.skill)) {
-          skill = test.skill as keyof typeof skillStats;
+      const resultSkill = String(resultData.testType || resultData.skill || '').toLowerCase();
+      if (resultSkill === 'listening' || resultSkill === 'reading') {
+        skill = resultSkill;
+      } else if (resultData.testId && testsCache.has(resultData.testId)) {
+        const testSkill = String(testsCache.get(resultData.testId).skill || '').toLowerCase();
+        if (testSkill === 'listening' || testSkill === 'reading' || testSkill === 'writing') {
+          skill = testSkill;
         }
       }
 
@@ -267,61 +404,73 @@ export async function calculateDashboardStats(teacherEmail: string): Promise<Das
       skillStats[skill].count += 1;
     }
 
-    // Process writing submissions - deduplicate by student+test
-    const latestWritingSubmissions = new Map<string, any>();
-    writingGradedSnapshot.forEach((doc) => {
-      const data = doc.data();
-      const key = `${data.studentEmail}_${data.testId}`;
-      const submittedAt = data.submittedAt?.toDate?.() || new Date(data.submittedAt);
+    // ── 7. Add writing stats from graded submissions ────────────────────────────
+    // "Graded" means: status is 'graded', OR status is 'completed' with a positive writingScore,
+    // OR any status with a positive writingScore (mirrors normalizeStatus in manual-grading.ts).
+    function isWritingGraded(data: any): boolean {
+      const status = String(data.status || '').toLowerCase();
+      const score = data.writingScore ?? data.ieltsBand ?? null;
+      if (status === 'graded') return true;
+      if (status === 'completed' && typeof score === 'number' && score > 0) return true;
+      if (typeof score === 'number' && score > 0) return true;
+      return false;
+    }
 
-      if (!latestWritingSubmissions.has(key) || submittedAt > latestWritingSubmissions.get(key).submittedAt) {
-        latestWritingSubmissions.set(key, { ...data, submittedAt });
-      }
-    });
+    console.log('[dashboard] latestWritingResults before stats:', latestWritingResults.size);
+    for (const [key, data] of latestWritingResults) {
+      const score = data.writingScore ?? data.ieltsBand ?? null;
+      const isG = isWritingGraded(data);
+      console.log(`  writing: key=${key} status=${data.status} score=${score} isGraded=${isG}`);
+    }
 
-    // Add writing scores
-    let writingScore = 0;
-    let writingCount = 0;
-    for (const [key, data] of latestWritingSubmissions) {
-      if (data.writingScore && data.writingScore > 0) {
-        writingScore += data.writingScore;
-        writingCount += 1;
+    for (const [, writingData] of latestWritingResults) {
+      if (!isWritingGraded(writingData)) continue;
+      const score = writingData.writingScore ?? writingData.ieltsBand ?? null;
+      if (typeof score !== 'number' || score <= 0) continue;
+
+      skillStats.writing.total += score;
+      skillStats.writing.count += 1;
+    }
+
+    console.log('[dashboard] final skillStats:', JSON.stringify(skillStats));
+
+    // ── 8. Calculate pending grading ───────────────────────────────────────────
+    const gradedWritingKeys = new Set<string>();
+    for (const [key, data] of latestWritingResults) {
+      if (isWritingGraded(data)) {
+        gradedWritingKeys.add(key);
       }
     }
 
-    if (writingCount > 0) {
-      skillStats.writing.total += writingScore;
-      skillStats.writing.count += writingCount;
-    }
+    // Ungraded writing submissions
+    const pendingWritingSubmissions = [...latestWritingResults.values()].filter(
+      (entry) => !isWritingGraded(entry),
+    ).length;
 
-    // Calculate pending grading
-    const writingSubmissionKeys = new Set<string>();
-    writingGradedSnapshot.forEach((doc) => {
-      const data = doc.data();
-      if (data.studentEmail && data.testId) {
-        writingSubmissionKeys.add(`${data.studentEmail}_${data.testId}`);
-      }
-    });
-    writingPendingSnapshot.forEach((doc) => {
-      const data = doc.data();
-      if (data.studentEmail && data.testId) {
-        writingSubmissionKeys.add(`${data.studentEmail}_${data.testId}`);
-      }
-    });
-
+    // Ungraded writing attempts in 'attempts' collection that have no writing submission
     let pendingWritingAttempts = 0;
+    // Re-deduplicate attempts for the pending-grading check
+    const latestAttempts = new Map<string, any>();
+    for (const attemptDoc of attemptsSnapshot.docs) {
+      const data = attemptDoc.data();
+      const key = `${data.studentEmail}_${data.testId}`;
+      const completedAt = data.completedAt?.toDate?.() || new Date(data.completedAt);
+      if (!latestAttempts.has(key) || completedAt > (latestAttempts.get(key)._completedAt ?? new Date(0))) {
+        latestAttempts.set(key, { ...data, _completedAt: completedAt });
+      }
+    }
     for (const [key, attemptData] of latestAttempts) {
       if (attemptData.testId && testsCache.has(attemptData.testId)) {
         const test = testsCache.get(attemptData.testId);
-        if (test.skill === 'writing' && !writingSubmissionKeys.has(key)) {
+        if (String(test.skill || '').toLowerCase() === 'writing' && !gradedWritingKeys.has(key)) {
           pendingWritingAttempts += 1;
         }
       }
     }
 
-    const totalPendingGrading = writingPendingSnapshot.size + pendingWritingAttempts;
+    const totalPendingGrading = pendingWritingSubmissions + pendingWritingAttempts;
 
-    // Calculate averages
+    // ── 9. Calculate skill averages ────────────────────────────────────────────
     Object.keys(skillStats).forEach((skill) => {
       const stat = skillStats[skill as keyof typeof skillStats];
       if (stat.count > 0) {
@@ -329,16 +478,25 @@ export async function calculateDashboardStats(teacherEmail: string): Promise<Das
       }
     });
 
-    const totalScoreWithWriting = totalScore + writingScore;
-    const totalAttemptsWithWriting = attemptCount + writingCount;
-    const averageScore = totalAttemptsWithWriting > 0 ? totalScoreWithWriting / totalAttemptsWithWriting : 0;
+    // averageScore = mean of per-skill averages (same logic as Overall Performance in UI)
+    const skillAvgValues = [
+      skillStats.listening.average,
+      skillStats.reading.average,
+      skillStats.writing.average,
+    ].filter((avg) => avg > 0);
+    const averageScore = skillAvgValues.length > 0
+      ? skillAvgValues.reduce((sum, avg) => sum + avg, 0) / skillAvgValues.length
+      : 0;
+
+    // ── 10. Completed tests = unique objective results + graded writing submissions ─
+    const completedTests = latestObjectiveResults.size + gradedWritingKeys.size;
 
     const stats: DashboardStats = {
       totalTests,
       activeStudents,
       averageScore,
       pendingGrading: totalPendingGrading,
-      completedTests: attemptCount,
+      completedTests,
       skillStats,
     };
 
@@ -418,9 +576,10 @@ export async function getRecentActivity(teacherEmail: string): Promise<ActivityR
     // Wrap in promise to track in-flight requests
     const promise = (async () => {
 
-    // Get recent attempts and writing submissions in parallel
-    const [attemptsSnapshot, writingSnapshot] = await Promise.all([
+    // Get recent attempts, testResults and writing submissions in parallel
+    const [attemptsSnapshot, testResultsSnapshot, writingSnapshot] = await Promise.all([
       getDocs(query(collection(db, 'attempts'), orderBy('completedAt', 'desc'), limit(30))),
+      getDocs(query(collection(db, 'testResults'), orderBy('completedAt', 'desc'), limit(30))),
       getDocs(query(collection(db, 'writing'), orderBy('submittedAt', 'desc'), limit(15))),
     ]);
 
@@ -430,10 +589,41 @@ export async function getRecentActivity(teacherEmail: string): Promise<ActivityR
     const classCodes = new Set<string>();
     const rawActivities: any[] = [];
 
-    // Process attempts
+    // Process testResults (objective + writing)
+    testResultsSnapshot.docs.forEach((doc) => {
+      const data = doc.data();
+      const status = String(data.status || '').toLowerCase();
+      const isWriting = String(data.testType || '').toLowerCase() === 'writing';
+      const completedAt = data.completedAt;
+
+      // Writing submissions appear regardless of status (pending = just submitted,
+      // graded = teacher graded, undefined = submitted without status field set).
+      // Objective tests only when status === 'completed' AND completedAt exists (truly submitted).
+      // NOTE: completedAt must exist as proof of real submission — a student's in-progress
+      // test may have status='completed' but no completedAt until they explicitly submit.
+      const isWritingWithStatus = isWriting && (status === 'pending' || status === 'graded' || !status);
+      const isObjectiveWithSubmission = !isWriting && status === 'completed' && completedAt;
+      if (isWritingWithStatus || isObjectiveWithSubmission) {
+        const date = completedAt?.toDate?.()
+          || data.submittedAt?.toDate?.()
+          || data.gradedAt?.toDate?.()
+          || new Date(completedAt || data.submittedAt || data.gradedAt || Date.now());
+
+        rawActivities.push({
+          source: 'testResult',
+          id: doc.id,
+          data,
+          date,
+        });
+        if (data.studentEmail) studentEmails.add(data.studentEmail);
+        if (data.testId) testIds.add(data.testId);
+      }
+    });
+
+    // Process attempts — only include if completedAt exists (student explicitly submitted)
     attemptsSnapshot.docs.forEach((doc) => {
       const data = doc.data();
-      if (data.status === 'completed') {
+      if (data.status === 'completed' && data.completedAt) {
         rawActivities.push({
           source: 'attempt',
           id: doc.id,
@@ -445,23 +635,24 @@ export async function getRecentActivity(teacherEmail: string): Promise<ActivityR
       }
     });
 
-    // Process writing
+    // Process writing (all statuses — submitted/pending/graded all go to recent activity)
     writingSnapshot.docs.forEach((doc) => {
       const data = doc.data();
-      rawActivities.push({
-        source: 'writing',
-        id: doc.id,
-        data,
-        date: data.submittedAt?.toDate?.() || new Date(data.submittedAt),
-      });
-      if (data.studentEmail) studentEmails.add(data.studentEmail);
-      if (data.testId) testIds.add(data.testId);
+      const status = String(data.status || '').toLowerCase();
+      if (status === 'submitted' || status === 'pending' || status === 'graded' || status === 'completed') {
+        rawActivities.push({
+          source: 'writing',
+          id: doc.id,
+          data,
+          date: data.submittedAt?.toDate?.() || new Date(data.submittedAt),
+        });
+        if (data.studentEmail) studentEmails.add(data.studentEmail);
+        if (data.testId) testIds.add(data.testId);
+      }
     });
-
-    // Batch load all related data in parallel
     const [studentCache, testCache] = await Promise.all([
-      batchGetDocumentsByEmail(db, 'users', studentEmails),
-      batchGetDocuments(db, 'tests', testIds),
+      batchGetUserDocuments(db, studentEmails),
+      batchGetDocumentsById(db, 'tests', testIds),
     ]);
 
     // Collect class codes
@@ -472,16 +663,16 @@ export async function getRecentActivity(teacherEmail: string): Promise<ActivityR
     // Batch load classes
     const classCache = await batchGetDocumentsByCode(db, 'classes', classCodes);
 
-    // Process activities with cached data
-    const activities = rawActivities.map((raw) => {
+    // Map to activity records
+    const activities: ActivityRecord[] = rawActivities.map((raw) => {
       const { data } = raw;
       const student = studentCache.get(data.studentEmail);
       const test = testCache.get(data.testId);
 
       const studentName = student?.displayName || student?.name || data.studentEmail?.split('@')[0] || 'Unknown';
       const className = student?.classCode ? classCache.get(student.classCode)?.name || '' : '';
-      const testName = test?.name || 'Test';
-      const testSkill = test?.skill || '';
+      const testName = test?.name || data.testName || 'Test';
+      const testSkill = test?.skill || data.testType || '';
 
       // Calculate time spent in minutes
       let timeSpentMinutes: number | null = null;
@@ -495,6 +686,12 @@ export async function getRecentActivity(teacherEmail: string): Promise<ActivityR
         timeSpentMinutes = Math.round((endTime.getTime() - startTime.getTime()) / (1000 * 60));
       }
 
+      // Score priority: testResults (ieltsBand) > attempts (ieltsBand) > writingScore > scores.ieltsBand > scores.auto
+      // NOTE: data.score in testResults is raw correct-answer count, NOT a band — never use it as fallback
+      const score =
+        (raw.source === 'testResult' ? (data.ieltsBand ?? null) : null)
+        ?? (data.ieltsBand ?? data.scores?.ieltsBand ?? data.scores?.auto ?? data.writingScore ?? null);
+
       return {
         id: raw.id,
         testId: data.testId || '',
@@ -503,28 +700,47 @@ export async function getRecentActivity(teacherEmail: string): Promise<ActivityR
         className,
         testName,
         testSkill,
-        score: data.scores?.ieltsBand || data.writingScore || null,
-        status: data.status === 'completed' ? 'completed' : data.status || 'processing',
+        score: typeof score === 'number' ? score : null,
+        status: data.status || 'processing',
         date: raw.date,
         timeSpentMinutes,
       };
     });
 
-    // Deduplicate by student+test, keep latest
-    const uniqueActivities = new Map<string, ActivityRecord>();
-    activities.forEach((activity) => {
-      const key = `${activity.studentEmail}_${activity.testId || activity.testName}_${activity.testSkill}`;
-      if (!uniqueActivities.has(key) || new Date(activity.date) > new Date(uniqueActivities.get(key)!.date)) {
-        uniqueActivities.set(key, activity);
-      }
-    });
+    // Separate objective tests (reading/listening) from writing
+    const objectiveActivities: ActivityRecord[] = [];
+    const writingActivities: ActivityRecord[] = [];
 
-    const finalActivities = Array.from(uniqueActivities.values())
+    for (const a of activities) {
+      const isWriting = a.testSkill === 'writing';
+      if (isWriting) {
+        writingActivities.push(a);
+      } else {
+        objectiveActivities.push(a);
+      }
+    }
+
+    // For objective tests: deduplicate by student+test, keeping the submission with
+    // the highest score (most complete = final submission). Autosaves have lower
+    // scores, so the final submission always wins.
+    const objectiveMap = new Map<string, ActivityRecord>();
+    for (const a of objectiveActivities) {
+      const key = `${a.studentEmail}_${a.testId}`;
+      const existing = objectiveMap.get(key);
+      if (!existing || (a.score !== null && a.score > (existing.score ?? -1))) {
+        objectiveMap.set(key, a);
+      }
+    }
+
+    const deduplicatedObjectives = Array.from(objectiveMap.values());
+    const allDeduplicated = [...deduplicatedObjectives, ...writingActivities];
+
+    const finalActivities = allDeduplicated
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-      .slice(0, 5);
+      .slice(0, 20);
 
     console.log('⚡ Performance: Recent activity loaded in', (performance.now() - perfStart).toFixed(0), 'ms');
-    console.log('📊 Accuracy: Processed', rawActivities.length, '→ Deduplicated to', uniqueActivities.size, '→ Showing', finalActivities.length);
+    console.log('📊 Accuracy: Processed', rawActivities.length, '→ Objective dedup:', deduplicatedObjectives.length, '→ Showing', finalActivities.length);
 
     // Cache results before returning
     localStorage.setItem(cacheKey, JSON.stringify(finalActivities));

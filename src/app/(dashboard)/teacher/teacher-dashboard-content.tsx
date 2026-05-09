@@ -285,7 +285,8 @@ export function TeacherDashboardContent() {
       return;
     }
 
-    router.push(buildManualGradingTarget(activity));
+    // Writing — if not pending it has been graded, so go to test hub to view results
+    router.push(buildTestHubTarget(activity));
   };
 
   return (
@@ -466,7 +467,21 @@ export function TeacherDashboardContent() {
                     <h2 className="card-title">Skill Performance Overview</h2>
                     <p className="card-subtitle">Comprehensive analysis of student performance across all IELTS skills</p>
                   </div>
-                  <button type="button" onClick={handleRefresh} className="btn-refresh" disabled={isLoading}>
+                  <button type="button" onClick={handleRefresh} disabled={isLoading}
+                    style={{
+                      background: 'var(--primary-dark)',
+                      color: 'white',
+                      border: 'none',
+                      padding: '0.5rem 1rem',
+                      borderRadius: '6px',
+                      cursor: isLoading ? 'not-allowed' : 'pointer',
+                      fontSize: '0.9rem',
+                      opacity: isLoading ? 0.65 : 1,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.4rem',
+                    }}
+                  >
                     <i className={`fas fa-sync-alt ${isLoading ? 'fa-spin' : ''}`}></i>
                     Refresh Data
                   </button>
@@ -541,7 +556,19 @@ export function TeacherDashboardContent() {
                         </div>
                         <div className="overall-right">
                           <div className="overall-number-wrap">
-                            <span className="score-badge-large">{stats.averageScore.toFixed(1)}</span>
+                            <span className="score-badge-large">
+                              {(() => {
+                                const skills = [
+                                  { avg: stats.skillStats.listening.average, count: stats.skillStats.listening.count },
+                                  { avg: stats.skillStats.reading.average,   count: stats.skillStats.reading.count   },
+                                  { avg: stats.skillStats.writing.average,   count: stats.skillStats.writing.count   },
+                                ];
+                                const valid = skills.filter((s) => s.count > 0);
+                                if (valid.length === 0) return '—';
+                                const overall = valid.reduce((sum, s) => sum + s.avg, 0) / valid.length;
+                                return overall.toFixed(1);
+                              })()}
+                            </span>
                             <span className="overall-denominator">/ 9.0</span>
                           </div>
                           <div className="overall-attempts">
@@ -708,11 +735,7 @@ export function TeacherDashboardContent() {
                 </div>
               </div>
             </>
-          ) : (
-            <div className="empty-state">
-              <p>Loading dashboard data...</p>
-            </div>
-          )}
+          ) : null}
         </div>
       </main>
     </div>

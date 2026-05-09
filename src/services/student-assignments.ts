@@ -24,7 +24,7 @@ export interface Assignment {
   status: AssignmentStatus;
   score?: number;
   band?: number;
-  lastActivityAt: Date;
+  lastActivityAt?: Date;
   deadline?: Date; // Optional: if added later
 }
 
@@ -98,9 +98,27 @@ export async function fetchStudentAssignments(
   const completions = new Map<string, { band: number; date: Date }>();
   resultsSnap?.docs.forEach(d => {
     const data = d.data();
-    if (data.status === 'completed') {
-      const testId = data.testId;
-      const band = Number(data.ieltsBand || data.score || 0);
+    const testId = data.testId;
+    const status = String(data.status || '').toLowerCase();
+    const skill = String(data.testType || data.skill || '').toLowerCase();
+    const isWriting = skill === 'writing';
+
+    if (isWriting) {
+      if (status === 'pending' || status === 'graded' || status === 'completed') {
+        const band = Number(data.writingScore ?? data.ieltsBand ?? null);
+        const date = extractDate(data.submittedAt || data.completedAt || data.gradedAt);
+        if (!completions.has(testId) || date > completions.get(testId)!.date) {
+          completions.set(testId, { band, date });
+        }
+      }
+      return;
+    }
+
+    if (status === 'completed') {
+      // Only trust ieltsBand from testResults (band score, not raw correct-answer count).
+      // For old submissions: if ieltsBand is missing but correctAnswers exists, we skip —
+      // the drawer backfill will populate ieltsBand when student opens it.
+      const band = Number(data.ieltsBand ?? null);
       const date = extractDate(data.completedAt || data.submittedAt);
       if (!completions.has(testId) || date > completions.get(testId)!.date) {
         completions.set(testId, { band, date });
@@ -116,7 +134,7 @@ export async function fetchStudentAssignments(
     const score = Number(data.writingScore || 0);
     const date = extractDate(data.submittedAt);
     
-    if (status === 'graded') {
+    if (status === 'graded' || status === 'pending' || status === 'completed') {
       if (!completions.has(testId) || date > completions.get(testId)!.date) {
         completions.set(testId, { band: score, date });
       }
@@ -147,7 +165,7 @@ export async function fetchStudentAssignments(
     // Determine status
     let status: AssignmentStatus = 'NOT_DONE';
     let band: number | undefined;
-    let lastActivityAt = extractDate(test.createdAt);
+    let lastActivityAt: Date | undefined = undefined;
 
     if (completions.has(testId)) {
       status = 'COMPLETED';
@@ -177,6 +195,8 @@ export async function fetchStudentAssignments(
       return statusOrder[a.status] - statusOrder[b.status];
     }
 
-    return b.lastActivityAt.getTime() - a.lastActivityAt.getTime();
+    const aTime = a.lastActivityAt?.getTime() ?? 0;
+    const bTime = b.lastActivityAt?.getTime() ?? 0;
+    return bTime - aTime;
   });
 }

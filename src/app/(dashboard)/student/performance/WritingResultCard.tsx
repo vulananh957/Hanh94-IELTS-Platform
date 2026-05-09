@@ -47,6 +47,7 @@ interface WritingResultCardProps {
 
 export function WritingResultCard({ result, index, onSelect }: WritingResultCardProps) {
   const isPending = result.writingScore === 'Pending';
+  const statusLabel = isPending ? 'Pending' : 'Graded';
 
   const feedbackSnippet = result.feedback
     ? result.feedback.trim()
@@ -66,8 +67,11 @@ export function WritingResultCard({ result, index, onSelect }: WritingResultCard
       {/* Left: metadata */}
       <div className="wrc-card-body">
         <div className="wrc-card-top">
-          <span className="wrc-index">#{index}</span>
-          <h3 className="wrc-title">{result.testName}</h3>
+          <div className="wrc-title-group">
+            <span className="wrc-index">#{index}</span>
+            <h3 className="wrc-title">{result.testName}</h3>
+            <span className={`wrc-status ${isPending ? 'pending' : 'graded'}`}>{statusLabel}</span>
+          </div>
           <TaskChips t1={result.task1Score} t2={result.task2Score} pending={isPending} />
         </div>
 

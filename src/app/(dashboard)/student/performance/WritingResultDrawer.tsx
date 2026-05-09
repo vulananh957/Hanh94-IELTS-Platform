@@ -187,17 +187,20 @@ export function WritingResultDrawer({ isOpen, onClose, result, onPrev, onNext, h
     <div className="wrd-drawer-overlay" onClick={onClose}>
       <div className="wrd-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="wrd-drawer-header">
-          <div className="wrd-drawer-header-inner">
-            <div className="wrd-drawer-nav">
-              <button className="wrd-icon-btn" onClick={onPrev} disabled={!hasPrev} title="Previous">
-                <i className="fas fa-chevron-left" />
-              </button>
-              <button className="wrd-icon-btn" onClick={onNext} disabled={!hasNext} title="Next">
-                <i className="fas fa-chevron-right" />
-              </button>
-            </div>
-            <button className="wrd-close-btn" onClick={onClose} title="Close">
+          <div className="wrd-drawer-header-left">
+            <button className="wrd-drawer-close" onClick={onClose} title="Close">
               <i className="fas fa-times" />
+            </button>
+            <div className="wrd-drawer-title-block">
+              <h2 className="wrd-drawer-title">{result.testName}</h2>
+            </div>
+          </div>
+          <div className="wrd-drawer-nav">
+            <button className="wrd-nav-btn" onClick={onPrev} disabled={!hasPrev} title="Previous result">
+              <i className="fas fa-chevron-left" />
+            </button>
+            <button className="wrd-nav-btn" onClick={onNext} disabled={!hasNext} title="Next result">
+              <i className="fas fa-chevron-right" />
             </button>
           </div>
         </div>

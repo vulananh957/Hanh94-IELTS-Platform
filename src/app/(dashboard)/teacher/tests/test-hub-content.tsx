@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, getFirestore, query, where } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
 import { clearAuthState } from '@/services/auth';
+import { TeacherResultDetailDrawer } from './TeacherResultDetailDrawer';
 import {
   deleteTestById,
   getTestHubData,
@@ -20,6 +21,7 @@ import {
 } from '@/services/test-hub';
 import '../teacher-dashboard.css';
 import './test-hub.css';
+import '../../student/performance/performance.css';
 
 const TESTS_PER_PAGE = 10;
 const db = getFirestore(firebaseApp);
@@ -53,6 +55,8 @@ type StudentsStatusRow = {
   completedAtMs: number | null;
   violationCount: number;
   hasAttempted: boolean;
+  writingGradingStatus?: 'pending' | 'graded' | null;
+  testResultId?: string;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -396,6 +400,67 @@ export function TestHubContent() {
   const [editDistributionType, setEditDistributionType] = useState<'all' | 'specific'>('all');
   const [editSelectedClasses, setEditSelectedClasses] = useState<string[]>([]);
   const [isSavingDistribution, setIsSavingDistribution] = useState(false);
+  const [resultDetailTarget, setResultDetailTarget] = useState<{
+    testResultId: string;
+    testId: string;
+    testName: string;
+    skill: 'reading' | 'listening';
+    studentName: string;
+    className: string;
+    rowIndex: number;
+  } | null>(null);
+
+  // Navigate to prev student who has a testResultId
+  const goToPrevStudent = useCallback((currentIndex: number, current: NonNullable<typeof resultDetailTarget>) => {
+    for (let i = currentIndex - 1; i >= 0; i--) {
+      const row = studentsStatusRows[i];
+      if (row?.testResultId) {
+        setResultDetailTarget({
+          testResultId: row.testResultId,
+          testId: current.testId,
+          testName: current.testName,
+          skill: current.skill,
+          studentName: row.displayName,
+          className: row.className,
+          rowIndex: i,
+        });
+        return;
+      }
+    }
+  }, [studentsStatusRows]);
+
+  // Navigate to next student who has a testResultId
+  const goToNextStudent = useCallback((currentIndex: number, current: NonNullable<typeof resultDetailTarget>) => {
+    for (let i = currentIndex + 1; i < studentsStatusRows.length; i++) {
+      const row = studentsStatusRows[i];
+      if (row?.testResultId) {
+        setResultDetailTarget({
+          testResultId: row.testResultId,
+          testId: current.testId,
+          testName: current.testName,
+          skill: current.skill,
+          studentName: row.displayName,
+          className: row.className,
+          rowIndex: i,
+        });
+        return;
+      }
+    }
+  }, [studentsStatusRows]);
+
+  const hasPrevWithResult = (idx: number) => {
+    for (let i = idx - 1; i >= 0; i--) {
+      if (studentsStatusRows[i]?.testResultId) return true;
+    }
+    return false;
+  };
+
+  const hasNextWithResult = (idx: number) => {
+    for (let i = idx + 1; i < studentsStatusRows.length; i++) {
+      if (studentsStatusRows[i]?.testResultId) return true;
+    }
+    return false;
+  };
 
   const sidebarRef = useRef<HTMLElement | null>(null);
   const loadSeqRef = useRef(0);
@@ -710,6 +775,7 @@ export function TestHubContent() {
       setStudentsStatusRows([]);
       setStudentsStatusError(null);
       setStudentsStatusLoading(false);
+      setResultDetailTarget(null);
       return;
     }
 
@@ -774,6 +840,7 @@ export function TestHubContent() {
               return false;
             });
 
+        const isWritingTest = studentsTest.skill === 'writing';
         const [testResultsSnapshot, attemptsSnapshot, writingSnapshot] = await Promise.all([
           getDocs(query(collection(db, 'testResults'), where('testId', '==', studentsTest.id))),
           getDocs(query(collection(db, 'attempts'), where('testId', '==', studentsTest.id), where('status', '==', 'completed'))),
@@ -784,16 +851,25 @@ export function TestHubContent() {
 
         const attemptedStudents = new Set<string>();
         const scoreByEmail = new Map<string, { score: number | null; completedAtMs: number | null }>();
+        const testResultScoreByEmail = new Map<string, { score: number | null; completedAtMs: number | null }>();
+        const testResultIdByEmail = new Map<string, string>();
+        const latestCompletedAtByEmail = new Map<string, number | null>();
         const violationCountByEmail = new Map<string, number>();
+        const writingGradingStatusByEmail = new Map<string, 'pending' | 'graded'>();
 
-        const updateScore = (email: string, score: number | null, completedAtMs: number | null) => {
+        const updateScore = (email: string, score: number | null, completedAtMs: number | null, isTestResult = false) => {
           if (!email) return;
-          const current = scoreByEmail.get(email);
-          const currentMs = current?.completedAtMs ?? -1;
+          const currentMs = (isTestResult ? (testResultScoreByEmail.get(email)?.completedAtMs ?? -1) : (scoreByEmail.get(email)?.completedAtMs ?? -1));
           const nextMs = completedAtMs ?? -1;
 
-          if (!current || nextMs >= currentMs) {
-            scoreByEmail.set(email, { score, completedAtMs });
+          if (isTestResult) {
+            if (!testResultScoreByEmail.has(email) || nextMs >= (testResultScoreByEmail.get(email)?.completedAtMs ?? -1)) {
+              testResultScoreByEmail.set(email, { score, completedAtMs });
+            }
+          } else {
+            if (!scoreByEmail.has(email) || nextMs >= (scoreByEmail.get(email)?.completedAtMs ?? -1)) {
+              scoreByEmail.set(email, { score, completedAtMs });
+            }
           }
         };
 
@@ -804,13 +880,50 @@ export function TestHubContent() {
           if (count > prev) violationCountByEmail.set(email, count);
         };
 
+        const updateCompletedAt = (email: string, completedAtMs: number | null) => {
+          if (!email || completedAtMs == null) return;
+          const prev = latestCompletedAtByEmail.get(email) ?? -1;
+          if (completedAtMs >= prev) {
+            latestCompletedAtByEmail.set(email, completedAtMs);
+          }
+        };
+
         testResultsSnapshot.forEach((item) => {
           const data = item.data() as Record<string, unknown>;
           const email = extractStudentEmail(data);
           if (!email) return;
 
+          const completedAtMs = toMillis(data.completedAt);
           attemptedStudents.add(email);
-          updateScore(email, toNumericScore(data.ieltsBand ?? data.score), toMillis(data.completedAt));
+          updateCompletedAt(email, completedAtMs);
+
+          // Store testResult doc ID for detail drawer (only for objective tests)
+          // Only store if this is the latest attempt for this student
+          if (!isWritingTest && completedAtMs != null) {
+            const currentMs = latestCompletedAtByEmail.get(email) ?? -1;
+            if (completedAtMs >= currentMs) {
+              testResultIdByEmail.set(email, item.id);
+            }
+          }
+
+          // For writing tests, scores may come from either the 'testResults' collection
+          // (testType='writing', status='graded', writingScore populated) or the 'writing' collection.
+          if (isWritingTest) {
+            const writingStatus = String(data.status ?? '').toLowerCase();
+            if (writingStatus === 'graded' && data.writingScore != null) {
+              updateScore(
+                email,
+                toNumericScore(data.writingScore ?? data.teacherScore ?? data.score),
+                toMillis(data.completedAt),
+              );
+              writingGradingStatusByEmail.set(email, 'graded');
+            } else if (!writingGradingStatusByEmail.has(email)) {
+              writingGradingStatusByEmail.set(email, 'pending');
+            }
+            return;
+          }
+
+          updateScore(email, toNumericScore(data.ieltsBand ?? null), toMillis(data.completedAt), true);
           updateViolationCount(email, data.violations);
           updateViolationCount(email, asRecord(data.antiCheat)?.violations);
         });
@@ -821,8 +934,23 @@ export function TestHubContent() {
           if (!email) return;
 
           attemptedStudents.add(email);
+          updateCompletedAt(email, toMillis(data.completedAt));
+
+          // For writing tests, attempts is used only as completion evidence.
+          // Never derive writing score from attempts to avoid showing default 0 before grading.
+          if (isWritingTest) {
+            if (!writingGradingStatusByEmail.has(email)) {
+              writingGradingStatusByEmail.set(email, 'pending');
+            }
+            updateViolationCount(email, data.violations);
+            updateViolationCount(email, asRecord(data.antiCheat)?.violations);
+            return;
+          }
+
           const scores = asRecord(data.scores);
-          updateScore(email, toNumericScore(scores?.writing ?? data.score), toMillis(data.completedAt));
+          // For non-writing: use scores object if available, otherwise fall back to data.score.
+          const scoreValue = scores ? (scores.ieltsBand ?? scores.auto ?? null) : data.score;
+          updateScore(email, toNumericScore(scoreValue), toMillis(data.completedAt), false);
           updateViolationCount(email, data.violations);
           updateViolationCount(email, asRecord(data.antiCheat)?.violations);
         });
@@ -833,11 +961,22 @@ export function TestHubContent() {
           if (!email) return;
 
           attemptedStudents.add(email);
-          updateScore(
-            email,
-            toNumericScore(data.writingScore ?? data.teacherScore ?? data.score),
-            toMillis(data.gradedAt ?? data.submittedAt ?? data.completedAt),
-          );
+          updateCompletedAt(email, toMillis(data.gradedAt ?? data.submittedAt ?? data.completedAt));
+          const writingStatus = String(data.status ?? '').toLowerCase();
+
+          if (writingStatus === 'graded') {
+            updateScore(
+              email,
+              toNumericScore(data.writingScore ?? data.teacherScore ?? data.score),
+              toMillis(data.gradedAt ?? data.submittedAt ?? data.completedAt),
+            );
+            writingGradingStatusByEmail.set(email, 'graded');
+          } else {
+            // pending / submitted but not yet graded — mark as pending, no score yet
+            if (!writingGradingStatusByEmail.has(email)) {
+              writingGradingStatusByEmail.set(email, 'pending');
+            }
+          }
 
           updateViolationCount(email, data.violations);
           updateViolationCount(email, asRecord(data.violationSummary)?.total ?? asRecord(data.violationSummary)?.count);
@@ -850,16 +989,20 @@ export function TestHubContent() {
           const classKey = String(student.classId || student.classCode || '').trim();
           const className = classKey ? (classMap.get(classKey)?.name || 'Unknown Class') : 'No Class';
           const displayName = student.displayName || student.name || student.email.split('@')[0] || 'Student';
-          const scoreData = scoreByEmail.get(email);
+          const testResultScore = testResultScoreByEmail.get(email);
+          const scoreData = testResultScore ?? scoreByEmail.get(email);
+          const completedAtMs = latestCompletedAtByEmail.get(email) ?? scoreData?.completedAtMs ?? null;
 
           return {
             student,
             displayName,
             className,
             latestScore: scoreData?.score ?? null,
-            completedAtMs: scoreData?.completedAtMs ?? null,
+            completedAtMs,
             violationCount: attemptedStudents.has(email) ? (violationCountByEmail.get(email) ?? 0) : 0,
             hasAttempted: attemptedStudents.has(email),
+            writingGradingStatus: studentsTest.skill === 'writing' ? (writingGradingStatusByEmail.get(email) ?? null) : null,
+            testResultId: testResultIdByEmail.get(email),
           };
         });
 
@@ -1414,6 +1557,9 @@ export function TestHubContent() {
                             <button className="btn btn-view" type="button" onClick={() => setPreviewTest(test)}>
                               <i className="fas fa-eye" /> Preview
                             </button>
+                            <button className="btn btn-edit" type="button" onClick={() => router.push(`/teacher/tests/edit/${test.id}`)} disabled={test.skill === 'writing'}>
+                              <i className="fas fa-edit" /> Edit
+                            </button>
                             <button className="btn btn-students" type="button" onClick={() => setStudentsTest(test)}>
                               <i className="fas fa-users" /> Students
                             </button>
@@ -1498,6 +1644,7 @@ export function TestHubContent() {
                 <div>Latest Score</div>
                 <div>Flag Status</div>
                 <div>Status</div>
+                <div>Detail</div>
               </div>
 
               <div className="students-status-list">
@@ -1546,7 +1693,9 @@ export function TestHubContent() {
                         <div className="students-status-cell">{formatStudentsCompletedAt(row.completedAtMs)}</div>
 
                         <div className="students-status-cell">
-                          {score == null ? (
+                          {row.writingGradingStatus === 'pending' ? (
+                            <span className="students-score-empty">-</span>
+                          ) : score == null ? (
                             <span className="students-score-empty">-</span>
                           ) : (
                             <span className={`students-score-chip ${scoreClass}`}>{score}</span>
@@ -1575,6 +1724,30 @@ export function TestHubContent() {
                           <span className={`student-status ${row.hasAttempted ? 'status-done' : 'status-not-done'}`}>
                             {row.hasAttempted ? 'Completed' : 'Not Done'}
                           </span>
+                        </div>
+
+                        <div className="students-status-cell">
+                          {studentsTest.skill !== 'writing' && row.hasAttempted && row.testResultId ? (
+                            <button
+                              className="students-detail-btn"
+                              onClick={() => {
+                                setResultDetailTarget({
+                                  testResultId: row.testResultId!,
+                                  testId: studentsTest.id,
+                                  testName: studentsTest.name,
+                                  skill: studentsTest.skill as 'reading' | 'listening',
+                                  studentName: row.displayName,
+                                  className: row.className,
+                                  rowIndex: studentsStatusRows.indexOf(row),
+                                });
+                              }}
+                              title="View result details"
+                            >
+                              <i className="fas fa-eye" />
+                            </button>
+                          ) : (
+                            <span className="students-detail-na">—</span>
+                          )}
                         </div>
                       </div>
                     );
@@ -1694,6 +1867,22 @@ export function TestHubContent() {
             </div>
           </div>
         </div>
+      ) : null}
+      {resultDetailTarget ? (
+        <TeacherResultDetailDrawer
+          testResultId={resultDetailTarget.testResultId}
+          testId={resultDetailTarget.testId}
+          testName={resultDetailTarget.testName}
+          skill={resultDetailTarget.skill}
+          studentName={resultDetailTarget.studentName}
+          className={resultDetailTarget.className}
+          index={resultDetailTarget.rowIndex + 1}
+          onClose={() => setResultDetailTarget(null)}
+          onPrev={() => goToPrevStudent(resultDetailTarget.rowIndex, resultDetailTarget)}
+          onNext={() => goToNextStudent(resultDetailTarget.rowIndex, resultDetailTarget)}
+          hasPrev={hasPrevWithResult(resultDetailTarget.rowIndex)}
+          hasNext={hasNextWithResult(resultDetailTarget.rowIndex)}
+        />
       ) : null}
     </div>
   );

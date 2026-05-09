@@ -70,17 +70,25 @@ export function buildAnswerKeyFromParts(parts: TestPart[]): Record<string, strin
       const count = getQuestionCount(questionType);
 
       if (isChooseMultiple(typeLabel)) {
-        for (let i = 0; i < count; i += 1) {
+        // questionCount reflects all expected question groups in this section.
+        // questions[] may be sparse if extraction skipped some, so we always loop
+        // by questionCount to ensure every group gets a slot in the answer key.
+        const effectiveCount = Math.max(
+          Number(questionType.questionCount) || 0,
+          questionType.questions?.length || 0,
+        );
+        for (let i = 0; i < effectiveCount; i += 1) {
           const question = toQuestion(questionType.questions?.[i]);
           const choiceCount = Number((question as { choiceCount?: number }).choiceCount || 3);
-
           const questionNumber = String(currentQuestionNumber);
-          const value = normalizeMulti(
-            ((question as { correctAnswers?: string[] }).correctAnswers || []).map((item) => String(item || '')),
-          );
 
-          if (value) {
-            key[questionNumber] = [value];
+          const answers = ((question as { correctAnswers?: string[] }).correctAnswers || [])
+            .map((item) => String(item || '').trim().toUpperCase())
+            .filter(Boolean)
+            .sort();
+
+          if (answers.length > 0) {
+            key[questionNumber] = [answers.join(' ')];
           }
 
           currentQuestionNumber += choiceCount;

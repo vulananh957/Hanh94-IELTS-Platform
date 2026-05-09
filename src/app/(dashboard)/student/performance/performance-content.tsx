@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
 import { clearAuthState } from '@/services/auth';
 import { fetchStudentWritingResults, type WritingResult } from '@/services/student-writing-results';
 import { fetchStudentObjectiveTests, type ObjectiveTestResult } from '@/services/student-objective-tests';
 import { fetchStudentClassName } from '@/services/student-profile';
+import { countTotalQuestionsFromMetadata, calculateIELTSBand } from '../take-test/take-test-utils';
 import { WritingResultCard } from './WritingResultCard';
 import { WritingResultDrawer } from './WritingResultDrawer';
 import { ObjectiveTestDrawer } from './ObjectiveTestDrawer';
@@ -39,7 +41,8 @@ function skillIconClass(skill: 'listening' | 'reading') {
 function pickLatestObjectiveMatch(results: ObjectiveTestResult[], testId: string): [ObjectiveTestResult | null, number] {
   const matches = results
     .map((result, index) => ({ result, index }))
-    .filter(({ result }) => result.testId === testId)
+    // Allow matching either by stored testId or by the document id (result.id)
+    .filter(({ result }) => result.testId === testId || result.id === testId)
     .sort((a, b) => b.result.completedAt.getTime() - a.result.completedAt.getTime());
 
   if (matches.length === 0) return [null, -1];
@@ -68,6 +71,15 @@ export function PerformanceContent() {
   const [objError, setObjError] = useState<string | null>(null);
   const [selectedObjTest, setSelectedObjTest] = useState<ObjectiveTestResult | null>(null);
   const [objDrawerIdx, setObjDrawerIdx] = useState(0);
+  const [showObjDrawer, setShowObjDrawer] = useState(false);
+  // Override values from Firestore with computed-from-metadata values for correct display
+  const [computedObjResults, setComputedObjResults] = useState<Record<string, { correctAnswers: number; totalQuestions: number; band: number }>>({});
+
+  const computedResultsCallback = useCallback((result: { correctAnswers: number; totalQuestions: number; band: number }) => {
+    const id = selectedObjTest?.id;
+    if (!id) return;
+    setComputedObjResults((prev) => ({ ...prev, [id]: result }));
+  }, [selectedObjTest?.id]);
 
   // Writing Feedback state
   const [writingResults, setWritingResults] = useState<WritingResult[]>([]);
@@ -118,6 +130,47 @@ export function PerformanceContent() {
 
     if (objData.status === 'fulfilled') {
       setObjTests(objData.value);
+
+      // Batch-fetch all test documents in parallel chunks (Firestore 'in' limit = 10)
+      const db = getFirestore(firebaseApp);
+      const results = objData.value;
+      const testIdChunks: string[][] = [];
+      for (let i = 0; i < results.length; i += 10) {
+        testIdChunks.push(results.slice(i, i + 10).map((t) => t.testId));
+      }
+
+      const fetchedMeta = await Promise.allSettled(
+        testIdChunks.map((chunk) =>
+          Promise.all(chunk.map((id) => getDoc(doc(db, 'tests', id))))
+        ),
+      );
+
+      // Flatten all fetched docs into a single map keyed by testId
+      const testMetaMap = new Map<string, Record<string, unknown>>();
+      fetchedMeta.forEach((chunkResult) => {
+        if (chunkResult.status !== 'fulfilled') return;
+        chunkResult.value.forEach((snap) => {
+          if (snap.exists()) testMetaMap.set(snap.id, snap.data() as Record<string, unknown>);
+        });
+      });
+
+      // Compute band for every result using the fetched metadata
+      const computed: Record<string, { correctAnswers: number; totalQuestions: number; band: number }> = {};
+      results.forEach((t) => {
+        const meta = testMetaMap.get(t.testId);
+        if (!meta) return;
+        const totalQuestions = countTotalQuestionsFromMetadata(meta as any);
+        if (totalQuestions === 0) return;
+        // Use 0 if correctAnswers is null/undefined; always overwrite stale Firestore band
+        const correctAnswers = t.correctAnswers ?? 0;
+        const band = calculateIELTSBand(correctAnswers, t.skill);
+        // Include 0-correct (band 0.0) so stale Firestore band is always replaced
+        computed[t.id] = { correctAnswers, totalQuestions, band };
+      });
+
+      if (seq === loadSeq.current) {
+        setComputedObjResults(computed);
+      }
     } else {
       setObjError('Failed to load objective test history.');
     }
@@ -228,21 +281,13 @@ export function PerformanceContent() {
   };
 
   useEffect(() => {
+    deepLinkHandled.current = false;
+  }, [searchParams]);
+
+  useEffect(() => {
     const reviewTestId = searchParams.get('reviewTestId')?.trim();
     if (!reviewTestId || deepLinkHandled.current) return;
     if (objLoading || writingLoading) return;
-
-    // First, check if the provided id matches an objective attempt id directly
-    const exactObjectiveById = objTests.find((r) => r.id === reviewTestId);
-    if (exactObjectiveById) {
-      const idx = objTests.findIndex((r) => r.id === reviewTestId);
-      setActiveTab('objective');
-      setObjPage(Math.floor(idx / ITEMS_PER_PAGE));
-      setSelectedObjTest(exactObjectiveById);
-      setObjDrawerIdx(idx + 1);
-      deepLinkHandled.current = true;
-      return;
-    }
 
     const [objectiveMatch, objectiveMatchIdx] = pickLatestObjectiveMatch(objTests, reviewTestId);
     if (objectiveMatch) {
@@ -250,16 +295,7 @@ export function PerformanceContent() {
       setObjPage(Math.floor(objectiveMatchIdx / ITEMS_PER_PAGE));
       setSelectedObjTest(objectiveMatch);
       setObjDrawerIdx(objectiveMatchIdx + 1);
-      deepLinkHandled.current = true;
-      return;
-    }
-
-    if (objTests.length > 0) {
-      const fallbackObjective = objTests[0];
-      setActiveTab('objective');
-      setObjPage(0);
-      setSelectedObjTest(fallbackObjective);
-      setObjDrawerIdx(1);
+      setShowObjDrawer(true);
       deepLinkHandled.current = true;
       return;
     }
@@ -426,10 +462,15 @@ export function PerformanceContent() {
                     <div className="obj-list">
                       {objPaginated.map((test, idx) => {
                         const globalIdx = objPage * ITEMS_PER_PAGE + idx + 1;
+                        const computed = computedObjResults[test.id];
+                        const displayCorrect = computed?.correctAnswers ?? test.correctAnswers ?? null;
+                        const displayTotal = computed?.totalQuestions ?? test.totalQuestions ?? null;
+                        const displayBand = computed?.band ?? test.band ?? null;
                         return (
                           <div key={test.id} className="obj-card" style={{ cursor: 'pointer' }} onClick={() => {
                             setSelectedObjTest(test);
                             setObjDrawerIdx(globalIdx);
+                            setShowObjDrawer(true);
                           }}>
                             <div className="obj-card-left">
                               <div className={`obj-skill-icon ${test.skill}`}>
@@ -443,18 +484,18 @@ export function PerformanceContent() {
                                 <div className="obj-card-meta">
                                   <span className="obj-skill-tag">{skillLabel(test.skill)}</span>
                                   <span className="obj-date">{timeAgo(test.completedAt)}</span>
-                                  {test.correctAnswers != null && test.totalQuestions != null && (
+                                  {displayCorrect != null && displayTotal != null && displayTotal > 0 && (
                                     <span className="obj-answers">
-                                      {test.correctAnswers}/{test.totalQuestions} correct
+                                      {displayCorrect}/{displayTotal} correct
                                     </span>
                                   )}
                                 </div>
                               </div>
                             </div>
                             <div className="obj-card-right">
-                              {test.band !== null ? (
+                              {displayBand != null ? (
                                 <div className="obj-band">
-                                  <div className="obj-band-value">{test.band.toFixed(1)}</div>
+                                  <div className="obj-band-value">{displayBand.toFixed(1)}</div>
                                   <div className="obj-band-label">Band</div>
                                 </div>
                               ) : (
@@ -605,27 +646,35 @@ export function PerformanceContent() {
       />
 
       {/* Objective Test Drawer */}
-      {selectedObjTest && (
+      {showObjDrawer && (
         <ObjectiveTestDrawer
-          test={selectedObjTest}
+          test={selectedObjTest!}
           index={objDrawerIdx}
-          onClose={() => setSelectedObjTest(null)}
+          onClose={() => {
+            setSelectedObjTest(null);
+            setShowObjDrawer(false);
+          }}
           onPrev={() => {
-            const currentIdx = objTests.findIndex((t) => t.id === selectedObjTest.id);
+            const id = selectedObjTest?.id;
+            if (!id) return;
+            const currentIdx = objTests.findIndex((t) => t.id === id);
             if (currentIdx > 0) {
               setSelectedObjTest(objTests[currentIdx - 1]);
               setObjDrawerIdx(objDrawerIdx - 1);
             }
           }}
           onNext={() => {
-            const currentIdx = objTests.findIndex((t) => t.id === selectedObjTest.id);
+            const id = selectedObjTest?.id;
+            if (!id) return;
+            const currentIdx = objTests.findIndex((t) => t.id === id);
             if (currentIdx < objTests.length - 1) {
               setSelectedObjTest(objTests[currentIdx + 1]);
               setObjDrawerIdx(objDrawerIdx + 1);
             }
           }}
-          hasPrev={objTests.findIndex((t) => t.id === selectedObjTest.id) > 0}
-          hasNext={objTests.findIndex((t) => t.id === selectedObjTest.id) < objTests.length - 1}
+          hasPrev={(selectedObjTest?.id ? objTests.findIndex((t) => t.id === selectedObjTest.id) : -1) > 0}
+          hasNext={(selectedObjTest?.id ? objTests.findIndex((t) => t.id === selectedObjTest.id) : -1) < objTests.length - 1}
+          onComputedResult={computedResultsCallback}
         />
       )}
     </div>
