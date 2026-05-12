@@ -796,10 +796,18 @@ export const useUploadTestStore = create<UploadTestStore>((set, get) => ({
 
             const questions = [...questionType.questions];
             const existingQuestion = questions[questionIndex] || {};
-            questions[questionIndex] = {
+            const updatedQuestion = {
               ...existingQuestion,
               ...patch,
             };
+
+            // DEBUG: Log when correctAnswer is being updated
+            if ('correctAnswer' in patch) {
+              console.log('[store updateQuestion] correctAnswer updated to:', JSON.stringify(patch.correctAnswer));
+              console.log('[store updateQuestion] full question:', JSON.stringify(updatedQuestion));
+            }
+
+            questions[questionIndex] = updatedQuestion;
 
             return {
               ...questionType,

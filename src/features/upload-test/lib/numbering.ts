@@ -42,6 +42,8 @@ export function calculateQuestionNumbers(parts: TestPart[]): TestPart[] {
         questionCount,
         startNumber,
         endNumber: currentNumber - 1,
+        // Explicitly preserve imageData — it may not survive the spread above
+        imageData: questionType.imageData,
       };
     });
 

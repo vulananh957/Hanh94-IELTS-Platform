@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getFirestore, doc, getDocs, query, where, updateDoc, writeBatch, collection } from 'firebase/firestore';
-import { firebaseApp } from '@/services/firebase';
+import { getAuth } from 'firebase-admin/auth';
+import { getFirestore } from 'firebase-admin/firestore';
+import { firebaseAdminApp } from '@/services/firebase-admin';
 import { generateAnswerKey } from '@/features/upload-test/lib/answer-key';
-import { calculateQuestionNumbers } from '@/features/upload-test/lib/numbering';
 import { calculateObjectiveScore } from '@/lib/score-calculator';
 import type { TestPart } from '@/features/upload-test/types';
 import type { ObjectiveSkill } from '@/lib/score-calculator';
@@ -29,6 +29,31 @@ async function getIdToken(request: NextRequest): Promise<string | null> {
   return null;
 }
 
+async function canUpdateTest(idToken: string, testId: string): Promise<boolean> {
+  const decoded = await getAuth(firebaseAdminApp).verifyIdToken(idToken);
+  const email = String(decoded.email || '').trim().toLowerCase();
+
+  if (!email) return false;
+
+  const db = getFirestore(firebaseAdminApp);
+  const [userDoc, testDoc] = await Promise.all([
+    db.collection('users').doc(email).get(),
+    db.collection('tests').doc(testId).get(),
+  ]);
+
+  const roleFromToken = String(decoded.role || decoded.userRole || '').trim().toLowerCase();
+  const roleFromDoc = String(userDoc.data()?.role || '').trim().toLowerCase();
+  const isPrivileged = roleFromToken === 'teacher' || roleFromToken === 'testcreator' || roleFromDoc === 'teacher' || roleFromDoc === 'testcreator';
+
+  if (!isPrivileged) return false;
+
+  // Allow privileged users (teacher/testCreator) to update tests.
+  // Legacy tests may have an ownerUid set to a different account; previously
+  // the cloud function allowed updates from teachers. To avoid breaking the
+  // edit workflow, privileged roles are permitted regardless of ownerUid.
+  return true;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const token = await getIdToken(request);
@@ -46,35 +71,36 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Only reading and listening tests can be updated via this endpoint.' }, { status: 400 });
     }
 
-    const db = getFirestore(firebaseApp);
+    const db = getFirestore(firebaseAdminApp);
 
-    // 1. Normalize parts and regenerate answerKey
-    const numberedParts = calculateQuestionNumbers(body.metadata.parts || []);
-    const answerKey = generateAnswerKey(numberedParts);
+    if (!(await canUpdateTest(token, body.testId))) {
+      return NextResponse.json({ success: false, error: 'Missing or insufficient permissions.' }, { status: 403 });
+    }
+
+    // 1. Regenerate answerKey from existing numbered parts
+    // (numbering is already done client-side before sending; no need to recalculate)
+    const parts = body.metadata.parts || [];
+    const answerKey = generateAnswerKey(parts);
 
     // 2. Update the test document
-    const testRef = doc(db, 'tests', body.testId);
-    await updateDoc(testRef, {
+    const testRef = db.collection('tests').doc(body.testId);
+    await testRef.set({
       name: body.testName || 'Untitled Test',
       skill: body.skill,
-      metadata: { parts: numberedParts },
+      metadata: { parts },
       files: body.files || {},
       answerKey,
       classAssignment: body.classAssignment || { distribution: 'all', selectedClasses: [] },
       updatedAt: new Date(),
-    });
+    }, { merge: true });
 
     // 3. Recalculate scores for all existing testResults
-    const resultsQuery = query(
-      collection(db, 'testResults'),
-      where('testId', '==', body.testId),
-    );
-    const resultsSnap = await getDocs(resultsQuery);
+    const resultsSnap = await db.collection('testResults').where('testId', '==', body.testId).get();
 
     let recalculatedCount = 0;
 
     if (!resultsSnap.empty) {
-      const batch = writeBatch(db);
+      const batch = db.batch();
 
       for (const resultDoc of resultsSnap.docs) {
         const resultData = resultDoc.data();
@@ -90,7 +116,7 @@ export async function POST(request: NextRequest) {
         const { correctAnswers, totalQuestions, band } = calculateObjectiveScore({
           answers: studentAnswers,
           answerKey,
-          parts: numberedParts,
+          parts,
           skill: body.skill as ObjectiveSkill,
         });
 

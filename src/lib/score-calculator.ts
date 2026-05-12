@@ -1,5 +1,3 @@
-'use client';
-
 import type { TestPart } from '@/features/upload-test/types';
 import { calculateIELTSBand } from '@/app/(dashboard)/student/take-test/take-test-utils';
 

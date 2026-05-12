@@ -223,8 +223,7 @@ async function getIdTokenLocal(): Promise<string> {
 
 async function callUpdateTestApi<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
   const token = await getIdTokenLocal();
-
-  const response = await fetch(`${BASE_URL}${path}`, {
+  const response = await fetch('/api/update-test', {
     method,
     headers: {
       'Content-Type': 'application/json',
