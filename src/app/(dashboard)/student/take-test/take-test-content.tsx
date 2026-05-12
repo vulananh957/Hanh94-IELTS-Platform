@@ -8,7 +8,9 @@ import { ref, uploadBytes } from 'firebase/storage';
 import { firebaseApp, firebaseStorage } from '@/services/firebase';
 import { calculateIELTSBand, countTotalQuestionsFromMetadata } from './take-test-utils';
 import { invalidateStudentCache } from '@/services/student-dashboard';
+import { ZoomableImage } from '@/components/shared/zoomable-image';
 import './take-test.css';
+import '@/components/shared/zoomable-image.css';
 
 type Skill = 'listening' | 'reading' | 'writing' | string;
 type Answers = Record<string, string>;
@@ -222,15 +224,18 @@ function isImageUrl(url: string | undefined): boolean {
     (lower.includes('firebasestorage') && lower.includes('writing'));
 }
 
-function MediaPreview({ url, label }: { url: string; label: string }) {
+function MediaPreview({ url, label, isWriting = false }: { url: string; label: string; isWriting?: boolean }) {
   const [mode, setMode] = useState<'direct' | 'google' | 'error'>('direct');
   const googleViewerUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(url)}&embedded=true`;
 
   return (
     <div className="tt-media-preview">
       <div className="tt-media-title">{label}</div>
-      <div className="tt-media-frame">
-        {isImageUrl(url) ? (
+      <div className={`tt-media-frame ${isWriting ? 'tt-media-frame-writing' : ''}`}>
+        {isImageUrl(url) && isWriting ? (
+          // Use zoomable image for writing task images
+          <ZoomableImage src={url} alt={label} maxZoom={5} minZoom={1} />
+        ) : isImageUrl(url) ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={url} alt={label} />
         ) : mode === 'direct' ? (
@@ -291,13 +296,22 @@ export function TakeTestContent() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeWritingTask, setActiveWritingTask] = useState<1 | 2>(1);
   const [audioPlayed, setAudioPlayed] = useState<Record<number, 'idle' | 'playing' | 'ended'>>({});
+  const [listeningUnlockedPart, setListeningUnlockedPart] = useState(1);
+  const [listeningWaitingPart, setListeningWaitingPart] = useState<number | null>(null);
+  const [listeningGapRemaining, setListeningGapRemaining] = useState(0);
   const [isInitializing, setIsInitializing] = useState(false);
+  const [cameraPosition, setCameraPosition] = useState({ x: 0, y: 0 });
+  const [isDraggingCamera, setIsDraggingCamera] = useState(false);
+  const cameraDragStartRef = useRef({ x: 0, y: 0, clientX: 0, clientY: 0 });
 
   const [isMonitoringReady, setIsMonitoringReady] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autosaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const listeningGapTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const listeningGapTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraElementRef = useRef<HTMLDivElement | null>(null);
   const lastTabSwitchRef = useRef(0);
   const isInitializingRef = useRef(false);
 
@@ -315,7 +329,7 @@ export function TakeTestContent() {
   const skill = normalizeSkill(test?.skill);
   const durationMinutes = useMemo(() => {
     if (!test) return 60;
-    const base = normalizeSkill(test.skill) === 'listening' ? 45 : 60;
+    const base = normalizeSkill(test.skill) === 'listening' ? 35 : 60;
     return Number(test.metadata?.duration || base);
   }, [test]);
 
@@ -483,6 +497,49 @@ export function TakeTestContent() {
     timerRef.current = null;
   }, []);
 
+  const clearListeningGapTimers = useCallback(() => {
+    if (listeningGapTimerRef.current) clearInterval(listeningGapTimerRef.current);
+    if (listeningGapTimeoutRef.current) clearTimeout(listeningGapTimeoutRef.current);
+    listeningGapTimerRef.current = null;
+    listeningGapTimeoutRef.current = null;
+  }, []);
+
+  const handleCameraMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return; // Only left mouse button
+    setIsDraggingCamera(true);
+    cameraDragStartRef.current = {
+      x: cameraPosition.x,
+      y: cameraPosition.y,
+      clientX: e.clientX,
+      clientY: e.clientY,
+    };
+  }, [cameraPosition]);
+
+  const handleCameraMouseMove = useCallback((e: MouseEvent) => {
+    if (!isDraggingCamera) return;
+    const start = cameraDragStartRef.current;
+    const deltaX = e.clientX - start.clientX;
+    const deltaY = e.clientY - start.clientY;
+    setCameraPosition({
+      x: start.x + deltaX,
+      y: start.y + deltaY,
+    });
+  }, [isDraggingCamera]);
+
+  const handleCameraMouseUp = useCallback(() => {
+    setIsDraggingCamera(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isDraggingCamera) return;
+    document.addEventListener('mousemove', handleCameraMouseMove);
+    document.addEventListener('mouseup', handleCameraMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleCameraMouseMove);
+      document.removeEventListener('mouseup', handleCameraMouseUp);
+    };
+  }, [isDraggingCamera, handleCameraMouseMove, handleCameraMouseUp]);
+
   const stopMonitoring = useCallback(() => {
     stopTimer();
     stopHeartbeat();
@@ -524,6 +581,30 @@ export function TakeTestContent() {
     // submitTest is a function declaration below; including it would recreate the timer every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [skill, stopTimer, test?.writingRule]);
+
+  const startListeningGap = useCallback((nextPart: number) => {
+    clearListeningGapTimers();
+    setListeningWaitingPart(nextPart);
+    setListeningGapRemaining(60);
+
+    const startedAt = Date.now();
+    listeningGapTimerRef.current = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      const remaining = Math.max(0, 60 - elapsed);
+      setListeningGapRemaining(remaining);
+      if (remaining <= 0 && listeningGapTimerRef.current) {
+        clearInterval(listeningGapTimerRef.current);
+        listeningGapTimerRef.current = null;
+      }
+    }, 1000);
+
+    listeningGapTimeoutRef.current = setTimeout(() => {
+      setListeningUnlockedPart(nextPart);
+      setListeningWaitingPart(null);
+      setListeningGapRemaining(0);
+      clearListeningGapTimers();
+    }, 60000);
+  }, [clearListeningGapTimers]);
 
   const startCamera = useCallback(async (): Promise<boolean> => {
     try {
@@ -633,7 +714,12 @@ export function TakeTestContent() {
       .then((data) => {
         if (!active) return;
         setTest(data);
-        const base = normalizeSkill(data.skill) === 'listening' ? 45 : 60;
+        setAudioPlayed({});
+        setListeningUnlockedPart(1);
+        setListeningWaitingPart(null);
+        setListeningGapRemaining(0);
+        clearListeningGapTimers();
+        const base = normalizeSkill(data.skill) === 'listening' ? 35 : 60;
         const duration = Number(data.metadata?.duration || base);
         remainingRef.current = duration * 60;
         setRemainingSeconds(duration * 60);
@@ -646,7 +732,12 @@ export function TakeTestContent() {
           if (!active) return;
           const data = { id: snap.id, ...snap.data() } as TestData;
           setTest(data);
-          const base = normalizeSkill(data.skill) === 'listening' ? 45 : 60;
+          setAudioPlayed({});
+          setListeningUnlockedPart(1);
+          setListeningWaitingPart(null);
+          setListeningGapRemaining(0);
+          clearListeningGapTimers();
+          const base = normalizeSkill(data.skill) === 'listening' ? 35 : 60;
           const duration = Number(data.metadata?.duration || base);
           remainingRef.current = duration * 60;
           setRemainingSeconds(duration * 60);
@@ -744,6 +835,7 @@ export function TakeTestContent() {
   useEffect(() => () => {
     stopMonitoring();
     if (autosaveRef.current) clearTimeout(autosaveRef.current);
+    clearListeningGapTimers();
   }, [stopMonitoring]);
 
   const setSingleAnswer = (key: string, value: string) => {
@@ -788,10 +880,20 @@ export function TakeTestContent() {
     scheduleAutosave();
   };
 
+  const handleListeningAudioEnded = (part: number) => {
+    setAudioPlayed((current) => ({ ...current, [part - 1]: 'ended' }));
+    if (part < 4) {
+      const nextPart = part + 1;
+      setListeningUnlockedPart((current) => Math.max(current, part));
+      startListeningGap(nextPart);
+    }
+  };
+
   const playAudio = (partIndex: number) => {
     const audio = document.getElementById(`tt-audio-${partIndex}`) as HTMLAudioElement | null;
     if (!audio) return;
     if (audioPlayed[partIndex] && audioPlayed[partIndex] !== 'idle') return;
+    if (partIndex + 1 > listeningUnlockedPart) return;
 
     void audio.play().then(() => {
       setAudioPlayed((current) => ({ ...current, [partIndex]: 'playing' }));
@@ -1568,19 +1670,31 @@ export function TakeTestContent() {
             const url = test.files?.[`listeningPart${part}`]?.[0];
             if (!url) return null;
             const status = audioPlayed[part - 1] || 'idle';
+            const isUnlocked = part <= listeningUnlockedPart;
+            const waitingForThisPart = listeningWaitingPart === part;
+            const countdownText = waitingForThisPart && listeningGapRemaining > 0 ? formatSeconds(listeningGapRemaining) : null;
+            const helpText = !isUnlocked
+              ? (waitingForThisPart
+                ? `Part ${part} will unlock in ${countdownText || '1:00'}.`
+                : `Part ${part} will unlock after the previous parts are completed.`)
+              : status === 'idle'
+                ? 'Click Play to start listening.'
+                : status === 'playing'
+                  ? 'Playing... Cannot pause or replay.'
+                  : 'Audio has ended. Cannot replay.';
             return (
               <div className="tt-audio-card" key={part}>
-                <h3>Audio Part {part}</h3>
+                <h3>Audio Part {part}{waitingForThisPart && listeningGapRemaining > 0 ? ` - next in ${countdownText}` : ''}</h3>
                 <audio
                   id={`tt-audio-${part - 1}`}
                   preload="auto"
                   src={url}
-                  onEnded={() => setAudioPlayed((current) => ({ ...current, [part - 1]: 'ended' }))}
+                  onEnded={() => handleListeningAudioEnded(part)}
                 />
-                <button type="button" disabled={status !== 'idle'} onClick={() => playAudio(part - 1)} aria-label={`Play audio part ${part}`}>
+                <button type="button" disabled={!isUnlocked || status !== 'idle'} onClick={() => playAudio(part - 1)} aria-label={`Play audio part ${part}`}>
                   <i className="fas fa-play" /> {status === 'idle' ? 'Play' : status === 'playing' ? 'Playing...' : 'Played'}
                 </button>
-                <span>{status === 'idle' ? 'Click Play to start listening' : status === 'playing' ? 'Playing... Cannot pause or replay' : 'Audio has ended. Cannot replay.'}</span>
+                <span>{helpText}</span>
               </div>
             );
           })}
@@ -1591,10 +1705,10 @@ export function TakeTestContent() {
                 <button type="button" className={activeWritingTask === 2 ? 'active' : ''} onClick={() => setActiveWritingTask(2)}>Task 2</button>
               </div>
               {activeWritingTask === 1 && (test.files?.writingTask1?.[0] || test.files?.writingTasks?.[0]) && (
-                <MediaPreview url={(test.files?.writingTask1?.[0] || test.files?.writingTasks?.[0]) as string} label="Writing Task 1" />
+                <MediaPreview url={(test.files?.writingTask1?.[0] || test.files?.writingTasks?.[0]) as string} label="Writing Task 1" isWriting={true} />
               )}
               {activeWritingTask === 2 && (test.files?.writingTask2?.[0] || test.files?.writingTasks?.[0]) && (
-                <MediaPreview url={(test.files?.writingTask2?.[0] || test.files?.writingTasks?.[0]) as string} label="Writing Task 2" />
+                <MediaPreview url={(test.files?.writingTask2?.[0] || test.files?.writingTasks?.[0]) as string} label="Writing Task 2" isWriting={true} />
               )}
             </>
           )}
@@ -1639,7 +1753,17 @@ export function TakeTestContent() {
         </section>
       </main>
 
-      <div className="tt-camera">
+      <div
+        ref={cameraElementRef}
+        className="tt-camera"
+        onMouseDown={handleCameraMouseDown}
+        style={{
+          cursor: isDraggingCamera ? 'grabbing' : 'grab',
+          transform: `translate(${cameraPosition.x}px, ${cameraPosition.y}px)`,
+          userSelect: isDraggingCamera ? 'none' : 'auto',
+          transition: isDraggingCamera ? 'none' : 'transform 0.1s ease-out',
+        }}
+      >
         <video ref={cameraVideoRef} autoPlay muted playsInline aria-label="Camera monitoring feed" />
       </div>
       {/* Hidden video elements for evidence capture */}

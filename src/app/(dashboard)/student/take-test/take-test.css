@@ -407,12 +407,14 @@
   overflow: hidden;
   background: #111827;
   box-shadow: 0 12px 34px rgba(0, 103, 105, 0.25);
+  touch-action: none;
 }
 
 .tt-camera video {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  pointer-events: none;
 }
 
 .tt-start-overlay,
@@ -552,4 +554,22 @@
     right: 0.7rem;
     bottom: 0.7rem;
   }
+}
+
+/* Zoomable image styling for writing tasks */
+.tt-media-frame-writing {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.tt-media-frame-writing .zoomable-image-container {
+  height: 100%;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.tt-media-frame-writing .zoomable-image-wrapper {
+  border: none;
+  min-height: 400px;
 }

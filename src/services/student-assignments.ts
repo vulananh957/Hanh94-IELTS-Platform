@@ -141,7 +141,16 @@ export async function fetchStudentAssignments(
     }
   });
 
-  // 4. Filter and build assignments list
+  // 4. Build a map of test IDs to their class assignment timestamps
+  const testAssignmentTimes = new Map<string, Date>();
+  testsSnap?.docs.forEach(d => {
+    const testId = d.id;
+    const test = d.data();
+    const assignmentTime = extractDate(test.classAssignment?.updatedAt || test.createdAt);
+    testAssignmentTimes.set(testId, assignmentTime);
+  });
+
+  // 5. Filter and build assignments list
   const assignments: Assignment[] = [];
 
   testsSnap?.docs.forEach(d => {
@@ -184,19 +193,20 @@ export async function fetchStudentAssignments(
     });
   });
 
-  // Sort: Not done first (newest first), then completed.
+  // Sort: By class assignment date (classAssignment.updatedAt) - newest first
+  // This ensures assignments most recently assigned to the class appear first
   return assignments.sort((a, b) => {
-    const statusOrder: Record<AssignmentStatus, number> = {
-      'NOT_DONE': 0,
-      'COMPLETED': 1,
-    };
-
-    if (statusOrder[a.status] !== statusOrder[b.status]) {
-      return statusOrder[a.status] - statusOrder[b.status];
+    const aAssignmentTime = testAssignmentTimes.get(a.id)?.getTime() ?? 0;
+    const bAssignmentTime = testAssignmentTimes.get(b.id)?.getTime() ?? 0;
+    
+    // If both have assignment times, sort by that (newest first)
+    if (aAssignmentTime && bAssignmentTime) {
+      return bAssignmentTime - aAssignmentTime;
     }
-
-    const aTime = a.lastActivityAt?.getTime() ?? 0;
-    const bTime = b.lastActivityAt?.getTime() ?? 0;
-    return bTime - aTime;
+    
+    // Fall back to createdAt if assignment time is not available
+    const aTime = a.createdAt?.getTime() ?? 0;
+    const bTime = b.createdAt?.getTime() ?? 0;
+    return bTime - aTime; // Newest first (descending)
   });
 }

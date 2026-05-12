@@ -90,7 +90,10 @@ export async function POST(request: NextRequest) {
       metadata: { parts },
       files: body.files || {},
       answerKey,
-      classAssignment: body.classAssignment || { distribution: 'all', selectedClasses: [] },
+      classAssignment: {
+        ...body.classAssignment || { distribution: 'all', selectedClasses: [] },
+        updatedAt: new Date(),
+      },
       updatedAt: new Date(),
     }, { merge: true });
 
