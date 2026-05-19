@@ -1,0 +1,63 @@
+<!-- favicon.svg (fixed: perfect circular mask, no background bleed) -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Circle mask to clip ALL content (prevents any glow bleeding outside) -->
+    <mask id="circleMask">
+      <rect width="512" height="512" fill="black"/>
+      <circle cx="256" cy="256" r="240" fill="white"/>
+    </mask>
+
+    <!-- Background radial gradient -->
+    <radialGradient id="bgGradient" cx="30%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#9DDE8B"/>
+      <stop offset="40%" stop-color="#40A578"/>
+      <stop offset="100%" stop-color="#006769"/>
+    </radialGradient>
+
+    <!-- Premium text gradient -->
+    <radialGradient id="txtGradient" cx="30%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="22%" stop-color="#E6FF94"/>
+      <stop offset="62%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F8FAFC"/>
+    </radialGradient>
+
+    <!-- Soft inner shadow for the letter -->
+    <filter id="innerShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feOffset dx="0" dy="4"/>
+      <feGaussianBlur stdDeviation="3" result="b"/>
+      <feComposite in2="b" operator="arithmetic" k2="-1" k3="1"/>
+      <feColorMatrix type="matrix" values="
+        0 0 0 0 0
+        0 0 0 0 0
+        0 0 0 0 0
+        0 0 0 0.25 0"/>
+      <feBlend in="SourceGraphic" mode="normal"/>
+    </filter>
+  </defs>
+
+  <!-- Group everything under the circular mask -->
+  <g mask="url(#circleMask)">
+    <!-- Full-bleed circle background -->
+    <circle cx="256" cy="256" r="240" fill="url(#bgGradient)"/>
+
+    <!-- Subtle inner highlight ring -->
+    <circle cx="256" cy="256" r="230" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="3"/>
+    <circle cx="256" cy="256" r="210" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2"/>
+
+    <!-- Golden 'h' (not abbreviated), centered -->
+    <g transform="translate(0,24)">
+      <text x="256" y="320"
+            text-anchor="middle"
+            font-family="Playfair Display, serif"
+            font-size="280"
+            font-weight="700"
+            fill="url(#txtGradient)"
+            filter="url(#innerShadow)"
+            style="paint-order: stroke fill markers;
+                   text-shadow: 0 4px 8px rgba(0,0,0,0.30), 0 0 24px rgba(230,255,148,0.55);">
+        h
+      </text>
+    </g>
+  </g>
+</svg>
