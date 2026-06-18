@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
+import { matchAnswer } from '@/app/(dashboard)/student/take-test/take-test-utils';
 
 /* ── types ─────────────────────────────────────────────────────── */
 interface AnswerRow {
@@ -68,10 +69,6 @@ function toPositiveInt(value: unknown, fallback: number): number {
   return next > 0 ? Math.floor(next) : fallback;
 }
 
-function normalize(s: string): string {
-  return s.replace(/\s+/g, ' ').trim().toLowerCase();
-}
-
 function formatQuestionLabel(start: number, end: number): string {
   return start === end ? String(start) : `${start}–${end}`;
 }
@@ -85,36 +82,6 @@ function splitAnswerTokens(value: string): string[] {
 
 function isChooseMultipleType(type: string): boolean {
   return /multiple choice.*choose multiple/i.test(type);
-}
-
-function matchAnswer(student: string, correct: string, type = ''): boolean {
-  if (!student || !correct) return false;
-  const s = normalize(student);
-  if (!s) return false;
-
-  const keyLetter = student.match(/^[A-Z](?:\.|\s)/)?.[0]?.toUpperCase()
-    ?? student.charAt(0).toUpperCase();
-
-  if (/^[A-Z](?:\.|\s|$)/.test(student.trim())) {
-    const accepted = splitAnswerTokens(correct);
-    if (accepted.some((c) => s === normalize(c) || s.startsWith(normalize(c)))) return true;
-    const corrected = accepted.map((a) => normalize(a).replace(/[^a-z0-9]/gi, ''));
-    const normS = normalize(s).replace(/[^a-z0-9]/gi, '');
-    if (corrected.some((c) => normS === c || normS.startsWith(c))) return true;
-    const plainKey = keyLetter.toUpperCase();
-    if (accepted.some((a) => normalize(a).startsWith(plainKey))) return true;
-  }
-
-  // Split on the same delimiters so "mail order" matches "MAIL ORDER"
-  const studentTokens = splitAnswerTokens(student);
-  const acceptedAnswers = splitAnswerTokens(correct);
-  if (
-    studentTokens.length === acceptedAnswers.length &&
-    studentTokens.every((tok) => acceptedAnswers.includes(tok))
-  ) {
-    return true;
-  }
-  return acceptedAnswers.some((c) => s === normalize(c));
 }
 
 function formatCorrectAnswer(question: Record<string, unknown>, typeName: string): string {
@@ -338,7 +305,7 @@ function buildSections(
             const questionRec = asRecord(questions[index]);
             const correct = txt(questionRec.correctAnswer ?? answerKey[qNum] ?? '', '');
             const student = studentAnswers[qNum] ?? '';
-            const isCorrect = matchAnswer(student, correct, typeName);
+            const isCorrect = matchAnswer(student, correct);
 
             blockRows.push({
               qNum,

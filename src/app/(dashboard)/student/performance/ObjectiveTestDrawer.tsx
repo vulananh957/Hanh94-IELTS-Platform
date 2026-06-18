@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { getFirestore, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
 import { calculateObjectiveScore } from '@/lib/score-calculator';
-import { calculateIELTSBand } from '@/app/(dashboard)/student/take-test/take-test-utils';
+import { calculateIELTSBand, matchAnswer } from '@/app/(dashboard)/student/take-test/take-test-utils';
 import type { ObjectiveTestResult } from '@/services/student-objective-tests';
 import type { TestPart } from '@/features/upload-test/types';
 
@@ -74,10 +74,6 @@ function toPositiveInt(value: unknown, fallback: number): number {
   return next > 0 ? Math.floor(next) : fallback;
 }
 
-function normalize(s: string): string {
-  return s.replace(/\s+/g, ' ').trim().toLowerCase();
-}
-
 function formatQuestionLabel(start: number, end: number): string {
   return start === end ? String(start) : `${start}–${end}`;
 }
@@ -91,29 +87,6 @@ function splitAnswerTokens(value: string): string[] {
 
 function isChooseMultipleType(type: string): boolean {
   return /multiple choice.*choose multiple/i.test(type);
-}
-
-function matchAnswer(student: string, correct: string, type = ''): boolean {
-  if (!student || !correct) return false;
-  const s = normalize(student);
-  if (!s) return false;
-
-  // Extract leading letter BEFORE normalizing so we catch "E." in answer keys like "E. People..."
-  const keyLetter = student.match(/^[A-Z](?:\.|\s)/)?.[0]?.toUpperCase()
-    ?? correct.match(/^[A-Z](?:\.|\s)/)?.[0]?.toUpperCase();
-  const stuLetter = student.match(/^[A-Z](?:\.|\s)/)?.[0]?.toUpperCase();
-
-  if (keyLetter && stuLetter) {
-    return keyLetter === stuLetter;
-  }
-
-  // Support "/" as a separator for multiple accepted answers (e.g., "six/6")
-  const acceptedAnswers = correct
-    .split('/')
-    .map((token) => normalize(token.trim()))
-    .filter(Boolean);
-
-  return acceptedAnswers.some((c) => s === c);
 }
 
 function formatCorrectAnswer(question: Record<string, unknown>, typeName: string): string {
@@ -350,7 +323,7 @@ function buildSections(
             const questionRec = asRecord(questions[index]);
             const correct = txt(questionRec.correctAnswer ?? answerKey[qNum] ?? '', '');
             const student = studentAnswers[qNum] ?? '';
-            const isCorrect = matchAnswer(student, correct, typeName);
+            const isCorrect = matchAnswer(student, correct);
 
             blockRows.push({
               qNum,

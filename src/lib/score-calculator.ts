@@ -1,5 +1,5 @@
 import type { TestPart } from '@/features/upload-test/types';
-import { calculateIELTSBand } from '@/app/(dashboard)/student/take-test/take-test-utils';
+import { calculateIELTSBand, matchAnswer, splitAnswerTokens } from '@/app/(dashboard)/student/take-test/take-test-utils';
 
 export type ObjectiveSkill = 'reading' | 'listening';
 
@@ -20,53 +20,8 @@ function toPositiveInt(value: unknown, fallback: number): number {
   return next > 0 ? Math.floor(next) : fallback;
 }
 
-function normalize(s: string): string {
-  return s.replace(/\s+/g, ' ').trim().toLowerCase();
-}
-
-function splitAnswerTokens(value: string): string[] {
-  return value
-    .split(/[\s,;/]+/)
-    .map((choice) => choice.trim().toUpperCase())
-    .filter(Boolean);
-}
-
 function isChooseMultipleType(type: string): boolean {
   return /multiple choice.*choose multiple/i.test(type);
-}
-
-function matchAnswer(student: string, correct: string): boolean {
-  if (!student || !correct) return false;
-  const s = normalize(student);
-  if (!s) return false;
-
-  const keyLetter = student.match(/^[A-Z](?:\.|\s)/)?.[0]?.toUpperCase()
-    ?? correct.match(/^[A-Z](?:\.|\s)/)?.[0]?.toUpperCase();
-  const stuLetter = student.match(/^[A-Z](?:\.|\s)/)?.[0]?.toUpperCase();
-
-  if (keyLetter && stuLetter) {
-    return keyLetter === stuLetter;
-  }
-
-  const acceptedAnswers = correct
-    .split('/')
-    .map((token) => normalize(token.trim()))
-    .filter(Boolean);
-
-  if (acceptedAnswers.some((c) => s === c)) return true;
-
-  // Token-based comparison: split on spaces/commas/semicolons and compare as sets
-  const studentTokens = splitAnswerTokens(student);
-  const correctTokens = splitAnswerTokens(correct);
-  if (
-    studentTokens.length > 0 &&
-    studentTokens.length === correctTokens.length &&
-    studentTokens.every((tok) => correctTokens.includes(tok))
-  ) {
-    return true;
-  }
-
-  return false;
 }
 
 function flattenAnswerKey(ak: unknown): Record<string, string> {
@@ -97,32 +52,46 @@ function flattenStudentAnswers(ans: unknown): Record<string, string> {
 function computeScoreForParts(
   parts: TestPart[],
   studentAnswers: Record<string, string>,
+  answerKey: Record<string, string>,
 ): { correctAnswers: number; totalQuestions: number } {
   let totalCorrect = 0;
   let totalQuestions = 0;
 
   for (const part of parts) {
     const questionTypes = part.questionTypes || [];
+    let currentNumber = toPositiveInt((part as any).startNumber, 1);
+
     for (const qt of questionTypes) {
-      if (isChooseMultipleType(qt.type)) {
-        for (const question of qt.questions || []) {
+      const typeName = qt.type || 'Questions';
+      const questions = qt.questions || [];
+      currentNumber = toPositiveInt(qt.startNumber, currentNumber);
+
+      if (isChooseMultipleType(typeName)) {
+        for (const question of questions) {
           const rec = question as Record<string, unknown>;
           const choiceCount = toPositiveInt(rec.choiceCount, 2);
-          const startNumber = toPositiveInt(qt.startNumber, 1);
+          const startNumber = currentNumber;
+          const endNumber = startNumber + choiceCount - 1;
 
-          // Each sub-item within the group counts as 1 question
+          const rawCorrect = (function() {
+            const answers = asArray(rec.correctAnswers)
+              .map((value) => String(value ?? '').trim().toUpperCase())
+              .filter(Boolean);
+            if (answers.length > 0) return answers.join(' ');
+            return String(rec.correctAnswer ?? asArray(rec.correctAnswers)[0] ?? answerKey[String(startNumber)] ?? '').trim();
+          })();
+          const correctAnswerTokens = Array.from(new Set(splitAnswerTokens(rawCorrect)));
+
           for (let subIdx = 0; subIdx < choiceCount; subIdx += 1) {
             const subNum = startNumber + subIdx;
-            const correctToken = String(
-              (rec.correctAnswers as string[])?.[subIdx] ?? '',
-            ).trim().toUpperCase();
+            const correctToken = correctAnswerTokens[subIdx] || '';
 
             if (!correctToken) {
               totalQuestions += 1;
               continue;
             }
 
-            const groupKey = `${startNumber}-${startNumber + choiceCount - 1}`;
+            const groupKey = `${startNumber}-${endNumber}`;
             const groupAnswer = studentAnswers[groupKey] || studentAnswers[String(subNum)] || '';
             const studentTokens = Array.from(new Set(splitAnswerTokens(groupAnswer)));
             const isCorrect = studentTokens.some((t) => matchAnswer(t, correctToken));
@@ -130,12 +99,20 @@ function computeScoreForParts(
             totalCorrect += isCorrect ? 1 : 0;
             totalQuestions += 1;
           }
+
+          currentNumber = endNumber + 1;
         }
       } else {
-        for (const question of qt.questions || []) {
-          const rec = question as Record<string, unknown>;
-          const correct = String(rec.correctAnswer ?? '').trim();
-          const qNum = String(toPositiveInt(qt.startNumber, 1) + ((qt.questions || []).indexOf(question)));
+        const questionCount = Math.max(
+          toPositiveInt(qt.questionCount, 0),
+          questions.length,
+        );
+
+        for (let index = 0; index < questionCount; index += 1) {
+          const qNum = String(currentNumber + index);
+          const question = questions[index];
+          const rec = question ? asRecord(question) : {};
+          const correct = String(rec.correctAnswer ?? answerKey[qNum] ?? '').trim();
           const student = studentAnswers[qNum] || '';
 
           if (!correct) {
@@ -146,6 +123,8 @@ function computeScoreForParts(
           totalCorrect += matchAnswer(student, correct) ? 1 : 0;
           totalQuestions += 1;
         }
+
+        currentNumber += questionCount;
       }
     }
   }
@@ -177,9 +156,14 @@ export function calculateObjectiveScore(params: {
 }): ScoreCalculationResult {
   // Flatten student answers if passed as a nested object
   const studentAnswers = flattenStudentAnswers(params.answers);
+  const answerKey = flattenAnswerKey(params.answerKey);
 
   // Compute raw correct / total
-  const { correctAnswers, totalQuestions } = computeScoreForParts(params.parts, studentAnswers);
+  const { correctAnswers, totalQuestions } = computeScoreForParts(
+    params.parts,
+    studentAnswers,
+    answerKey,
+  );
 
   // Compute IELTS band
   const band = calculateIELTSBand(correctAnswers, params.skill);

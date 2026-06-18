@@ -108,27 +108,72 @@ export function getOptions(value: unknown, fallbackCount = 12): string[] {
 
 /* ── Scoring helpers ──────────────────────────────────────────────── */
 
+function normalizeString(s: string): string {
+  return s.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function splitAnswerTokensNoSlash(value: string): string[] {
+  return value
+    .split(/[\s,;]+/)
+    .map((choice) => choice.trim().toUpperCase())
+    .filter(Boolean);
+}
+
+function matchSingleOption(student: string, option: string): boolean {
+  const s = normalizeString(student);
+  const opt = normalizeString(option);
+  if (!s || !opt) return false;
+
+  if (s === opt) return true;
+
+  // Try matching if both are letters or letter-prefixed (e.g. "A." vs "A")
+  const mStudent = student.trim().match(/^[A-Z](?:\.|\s|$)/i);
+  const mOption = option.trim().match(/^[A-Z](?:\.|\s|$)/i);
+  if (mStudent && mOption) {
+    const stuLetter = mStudent[0].toUpperCase().replace('.', '').trim();
+    const optLetter = mOption[0].toUpperCase().replace('.', '').trim();
+    if (stuLetter === optLetter) return true;
+  }
+
+  // Token-based comparison: split on spaces/commas/semicolons and compare as sets
+  const studentTokens = splitAnswerTokensNoSlash(student);
+  const optionTokens = splitAnswerTokensNoSlash(option);
+  if (
+    studentTokens.length > 0 &&
+    studentTokens.length === optionTokens.length &&
+    studentTokens.every((tok) => optionTokens.includes(tok))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function matchAnswer(student: string, correct: string): boolean {
+  if (!student || !correct) return false;
+
+  // Split student's potential slash options as well (in case they write both)
+  const studentOptions = student
+    .split('/')
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+  const acceptedAnswers = correct
+    .split('/')
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+  return studentOptions.some((sOpt) =>
+    acceptedAnswers.some((cOpt) => matchSingleOption(sOpt, cOpt))
+  );
+}
+
 export function calculateSingleAnswerScore(userAnswer: unknown, accepted: unknown[]): number {
   if (!String(userAnswer || '').trim()) return 0;
+  const student = String(userAnswer).trim();
 
-  const userStr = String(userAnswer).trim();
-  const userLower = userStr.toLowerCase();
-
-  const isCorrect = accepted.some((item) => {
-    const acceptedStr = String(item).trim();
-    if (acceptedStr.toLowerCase() === userLower) return true;
-
-    if (acceptedStr.includes('/')) {
-      return acceptedStr.split('/').map((option) => option.trim().toLowerCase()).includes(userLower);
-    }
-
-    if (acceptedStr.includes(',') || acceptedStr.includes(';')) {
-      return acceptedStr.split(/[,;]/).map((option) => option.trim().toLowerCase()).includes(userLower);
-    }
-
-    return false;
-  });
-
+  // accepted is an array of acceptable answers, each might contain alternative options separated by '/'
+  const isCorrect = accepted.some((item) => matchAnswer(student, String(item)));
   return isCorrect ? 1 : 0;
 }
 

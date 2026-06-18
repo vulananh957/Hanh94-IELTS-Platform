@@ -6,7 +6,21 @@ import { getAuth, onAuthStateChanged, type User } from 'firebase/auth';
 import { addDoc, collection, doc, getDoc, getFirestore, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { ref, uploadBytes } from 'firebase/storage';
 import { firebaseApp, firebaseStorage } from '@/services/firebase';
-import { calculateIELTSBand, countTotalQuestionsFromMetadata } from './take-test-utils';
+import {
+  calculateIELTSBand,
+  countTotalQuestionsFromMetadata,
+  formatSeconds,
+  normalizeSkill,
+  splitList,
+  splitAnswerTokens,
+  toLetter,
+  getImageSrc,
+  getQuestionTypeImages,
+  getOptions,
+  calculateSingleAnswerScore,
+  calculateMultipleChoiceScore,
+  calculateScore,
+} from './take-test-utils';
 import { invalidateStudentCache } from '@/services/student-dashboard';
 import { ZoomableImage } from '@/components/shared/zoomable-image';
 import './take-test.css';
@@ -87,111 +101,7 @@ const PROJECT_ID = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'hanh94esl-717
 const FUNCTIONS_BASE = `https://us-central1-${PROJECT_ID}.cloudfunctions.net`;
 const MAX_WARNINGS = 3;
 
-function formatSeconds(value: number): string {
-  const safe = Math.max(0, Math.floor(value));
-  const minutes = Math.floor(safe / 60);
-  const seconds = safe % 60;
-  return `${minutes}:${String(seconds).padStart(2, '0')}`;
-}
 
-function normalizeSkill(value: unknown): Skill {
-  const skill = String(value || '').toLowerCase();
-  if (skill.includes('listening')) return 'listening';
-  if (skill.includes('reading')) return 'reading';
-  if (skill.includes('writing')) return 'writing';
-  return skill || 'reading';
-}
-
-function splitList(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
-  return String(value || '')
-    .split(/\r?\n|[,;|]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function splitAnswerTokens(value: unknown): string[] {
-  return String(value || '')
-    .split(/[,\s;/]+/)
-    .map((choice) => choice.trim().toUpperCase())
-    .filter(Boolean);
-}
-
-function toLetter(index: number): string {
-  return String.fromCharCode(65 + index);
-}
-
-function getImageSrc(source: TestQuestionType | TestQuestion | undefined): string | null {
-  if (!source) return null;
-  if ('imageData' in source && source.imageData?.src) return source.imageData.src;
-  if ('image' in source && source.image) return source.image;
-  return null;
-}
-
-function getQuestionTypeImages(qt: TestQuestionType): string[] {
-  const urls = [getImageSrc(qt), ...(qt.questions || []).map((question) => getImageSrc(question))]
-    .filter((url): url is string => Boolean(url));
-  return Array.from(new Set(urls));
-}
-
-function getOptions(value: unknown, fallbackCount = 12): string[] {
-  const parsed = splitList(value);
-  if (parsed.length > 0) return parsed;
-  return Array.from({ length: fallbackCount }, (_, index) => toLetter(index));
-}
-
-function calculateSingleAnswerScore(userAnswer: unknown, accepted: unknown[]): number {
-  if (!String(userAnswer || '').trim()) return 0;
-
-  const userStr = String(userAnswer).trim();
-  const userLower = userStr.toLowerCase();
-
-  const isCorrect = accepted.some((item) => {
-    const acceptedStr = String(item).trim();
-    if (acceptedStr.toLowerCase() === userLower) return true;
-
-    if (acceptedStr.includes('/')) {
-      return acceptedStr.split('/').map((option) => option.trim().toLowerCase()).includes(userLower);
-    }
-
-    if (acceptedStr.includes(',') || acceptedStr.includes(';')) {
-      return acceptedStr.split(/[,;]/).map((option) => option.trim().toLowerCase()).includes(userLower);
-    }
-
-    return false;
-  });
-
-  return isCorrect ? 1 : 0;
-}
-
-function calculateMultipleChoiceScore(userAnswer: unknown, accepted: unknown[]): number {
-  const studentChoices = Array.from(new Set(splitAnswerTokens(userAnswer)));
-  const acceptedChoices = accepted.flatMap((item) => splitAnswerTokens(item));
-
-  let correctChoices = 0;
-  studentChoices.forEach((choice) => {
-    if (acceptedChoices.includes(choice)) correctChoices += 1;
-  });
-
-  return Math.min(correctChoices, acceptedChoices.length);
-}
-
-function calculateScore(userAnswer: unknown, accepted: unknown[]): number {
-  if (!String(userAnswer || '').trim()) return 0;
-
-  const isMultipleChoice = accepted.some((item) => {
-    const answer = String(item);
-    return answer.includes(',') ||
-      answer.includes(';') ||
-      answer.includes('/') ||
-      answer.includes(' ') ||
-      (answer.length > 1 && /^[A-Z\s,;/]+$/i.test(answer));
-  });
-
-  return isMultipleChoice
-    ? calculateMultipleChoiceScore(userAnswer, accepted)
-    : calculateSingleAnswerScore(userAnswer, accepted);
-}
 
 async function callFunction<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
   const auth = getAuth(firebaseApp);
