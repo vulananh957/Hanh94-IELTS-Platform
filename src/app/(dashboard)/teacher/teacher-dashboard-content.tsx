@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, getFirestore, onSnapshot } from 'firebase/firestore';
+import { collection, getFirestore, onSnapshot, query, orderBy, limit } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
 import { clearAuthState } from '@/services/auth';
 import { calculateDashboardStats, getRecentActivity, invalidateDashboardDataCache, type ActivityRecord, type DashboardStats } from '@/services/dashboard';
@@ -131,11 +131,11 @@ export function TeacherDashboardContent() {
 
     loadDashboardData({ showLoading: true, progressMessage: 'Loading dashboard metrics...' });
 
-    watchQuery(collection(db, 'tests'));
-    watchQuery(collection(db, 'attempts'));
-    watchQuery(collection(db, 'writing'));
-    watchQuery(collection(db, 'users'));
-    watchQuery(collection(db, 'classes'));
+    // Watch only the single most recent attempt, writing submission, or test result.
+    // This allows real-time updates when students submit tests, with minimal read overhead.
+    watchQuery(query(collection(db, 'attempts'), orderBy('completedAt', 'desc'), limit(1)));
+    watchQuery(query(collection(db, 'writing'), orderBy('submittedAt', 'desc'), limit(1)));
+    watchQuery(query(collection(db, 'testResults'), orderBy('completedAt', 'desc'), limit(1)));
 
     const interval = setInterval(() => {
       if (!active) return;

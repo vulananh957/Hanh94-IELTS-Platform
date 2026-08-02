@@ -111,19 +111,27 @@ function cacheTimeKey(teacherEmail: string): string {
   return `${cacheKey(teacherEmail)}_time`;
 }
 
+const memoryCache = new Map<string, { data: ManualGradingSubmission[]; timestamp: number }>();
+
 function readCache(teacherEmail: string): ManualGradingSubmission[] | null {
+  // Check memory cache first
+  const mem = memoryCache.get(teacherEmail);
+  if (mem && Date.now() - mem.timestamp < CACHE_TTL_MS) {
+    return mem.data;
+  }
+
   if (typeof window === 'undefined') return null;
 
-  const raw = localStorage.getItem(cacheKey(teacherEmail));
-  const rawTime = localStorage.getItem(cacheTimeKey(teacherEmail));
-  if (!raw || !rawTime) return null;
-
-  const age = Date.now() - Number(rawTime);
-  if (!Number.isFinite(age) || age > CACHE_TTL_MS) return null;
-
   try {
+    const raw = localStorage.getItem(cacheKey(teacherEmail));
+    const rawTime = localStorage.getItem(cacheTimeKey(teacherEmail));
+    if (!raw || !rawTime) return null;
+
+    const age = Date.now() - Number(rawTime);
+    if (!Number.isFinite(age) || age > CACHE_TTL_MS) return null;
+
     const parsed = JSON.parse(raw) as Array<Record<string, unknown>>;
-    return parsed.map((item) => ({
+    const mapped = parsed.map((item) => ({
       id: asText(item.id),
       testId: asText(item.testId),
       testName: asText(item.testName),
@@ -143,22 +151,42 @@ function readCache(teacherEmail: string): ManualGradingSubmission[] | null {
       task2Content: asText(item.task2Content),
       source: (asText(item.source) as 'writing' | 'testResult' | 'attempt') || 'writing',
     }));
-  } catch {
+
+    // Cache in memory for quick reuse
+    memoryCache.set(teacherEmail, { data: mapped, timestamp: Number(rawTime) });
+    return mapped;
+  } catch (err) {
+    console.error('Error reading manual grading cache from localStorage:', err);
     return null;
   }
 }
 
 function writeCache(teacherEmail: string, payload: ManualGradingSubmission[]): void {
+  // Store in memory cache
+  memoryCache.set(teacherEmail, { data: payload, timestamp: Date.now() });
+
   if (typeof window === 'undefined') return;
-  localStorage.setItem(cacheKey(teacherEmail), JSON.stringify(payload));
-  localStorage.setItem(cacheTimeKey(teacherEmail), String(Date.now()));
+
+  try {
+    localStorage.setItem(cacheKey(teacherEmail), JSON.stringify(payload));
+    localStorage.setItem(cacheTimeKey(teacherEmail), String(Date.now()));
+  } catch (err) {
+    console.warn('Unable to write manual grading cache to localStorage (quota exceeded or disabled):', err);
+  }
 }
 
 export function invalidateManualGradingCache(teacherEmail: string): void {
-  if (typeof window === 'undefined') return;
-  localStorage.removeItem(cacheKey(teacherEmail));
-  localStorage.removeItem(cacheTimeKey(teacherEmail));
+  memoryCache.delete(teacherEmail);
   inFlightRequests.delete(teacherEmail);
+
+  if (typeof window === 'undefined') return;
+
+  try {
+    localStorage.removeItem(cacheKey(teacherEmail));
+    localStorage.removeItem(cacheTimeKey(teacherEmail));
+  } catch (err) {
+    console.error('Error invalidating manual grading cache:', err);
+  }
 }
 
 async function batchByDocumentId(

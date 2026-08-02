@@ -136,13 +136,15 @@ export default function LoginPage() {
       card.style.transform = 'perspective(1000px) rotateX(0deg) rotateY(0deg)';
     };
 
+    const currentCard = cardRef.current;
+
     document.addEventListener('mousemove', onMouseMove);
-    cardRef.current?.addEventListener('mouseleave', onMouseLeave);
+    currentCard?.addEventListener('mouseleave', onMouseLeave);
 
     return () => {
       active = false;
       document.removeEventListener('mousemove', onMouseMove);
-      cardRef.current?.removeEventListener('mouseleave', onMouseLeave);
+      currentCard?.removeEventListener('mouseleave', onMouseLeave);
     };
   }, [redirectByRole, router, showToast]);
 
@@ -168,16 +170,12 @@ export default function LoginPage() {
           <div className="login-brand-name">hanh94esl</div>
 
           <h1 className="login-title">Welcome to hanh94esl</h1>
-          <p className="login-subtitle">Sign in with Google to begin your IELTS journey</p>
+          <p className="login-subtitle">Sign in to begin your IELTS journey</p>
 
           <button className="login-signin-btn" onClick={signIn} disabled={isSubmitting}>
             <div className="login-google-icon" />
-            {isSubmitting ? 'Signing in...' : 'Sign in with Google'}
+            Sign in with Google
           </button>
-
-          <div className="login-divider">
-            <span>Secure Authentication</span>
-          </div>
 
           <div className="login-security-note">
             <p>

@@ -13,6 +13,20 @@
   --success: #059669;
   --warning: #d97706;
   --error: #dc2626;
+  /* Writing drawer CSS variable overrides (used by wrd-* classes) */
+  --c-surface: #fffdf9;
+  --c-deep: #006769;
+  --c-mid: #40a578;
+  --c-primary: #40a578;
+  --c-primary-hover: #2d7a57;
+  --c-text: #1a1a1a;
+  --c-muted: #718096;
+  --c-border: #e2e8f0;
+  --c-hover: #f7fafc;
+  --c-bg: #f8fafc;
+  --c-subtle: #a0aec0;
+  --radius-sm: 6px;
+  --radius-md: 10px;
   background: var(--gray-50);
 }
 
@@ -1224,6 +1238,14 @@
   z-index: 10002 !important;
 }
 
+.wrd-drawer-overlay {
+  z-index: 10003 !important;
+}
+
+.wrd-drawer {
+  z-index: 10004 !important;
+}
+
 .students-score-pending {
   color: var(--warning);
   font-size: 1.1rem;
@@ -1359,4 +1381,23 @@
   .students-status-row > div:nth-child(7) {
     display: none;
   }
+}
+
+/* Writing drawer feedback file placeholder */
+.wrd-no-feedback {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: #f8fafc;
+  border: 1px dashed var(--c-border);
+  border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+  color: var(--c-muted);
+}
+
+.wrd-no-feedback i {
+  color: var(--c-subtle);
+  font-size: 1rem;
+  flex-shrink: 0;
 }

@@ -12,6 +12,7 @@ import {
 	setPersistence,
 	signInWithPopup,
 	signInWithRedirect,
+	signInWithEmailAndPassword,
 	type Auth,
 	type User,
 } from 'firebase/auth';
@@ -314,6 +315,19 @@ export async function handleGoogleSignIn(): Promise<User> {
 		}
 
 		// Ensure error is always an Error instance
+		if (error instanceof Error) {
+			throw error;
+		}
+		throw new Error(typeof error === 'string' ? error : 'Authentication failed. Please try again.');
+	}
+}
+
+export async function handleEmailSignIn(email: string, password: string): Promise<User> {
+	await ensureAuthPersistence();
+	try {
+		const result = await signInWithEmailAndPassword(auth, email, password);
+		return result.user;
+	} catch (error) {
 		if (error instanceof Error) {
 			throw error;
 		}

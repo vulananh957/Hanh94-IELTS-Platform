@@ -7,6 +7,7 @@ import { collection, doc, getDoc, getDocs, getFirestore, query, where } from 'fi
 import { firebaseApp } from '@/services/firebase';
 import { clearAuthState } from '@/services/auth';
 import { TeacherResultDetailDrawer } from './TeacherResultDetailDrawer';
+import { TeacherWritingResultDetailDrawer } from './TeacherWritingResultDetailDrawer';
 import {
   deleteTestById,
   getTestHubData,
@@ -404,7 +405,7 @@ export function TestHubContent() {
     testResultId: string;
     testId: string;
     testName: string;
-    skill: 'reading' | 'listening';
+    skill: 'reading' | 'listening' | 'writing';
     studentName: string;
     className: string;
     rowIndex: number;
@@ -880,11 +881,14 @@ export function TestHubContent() {
           if (count > prev) violationCountByEmail.set(email, count);
         };
 
-        const updateCompletedAt = (email: string, completedAtMs: number | null) => {
+        const updateCompletedAt = (email: string, completedAtMs: number | null, docRef?: string) => {
           if (!email || completedAtMs == null) return;
           const prev = latestCompletedAtByEmail.get(email) ?? -1;
           if (completedAtMs >= prev) {
             latestCompletedAtByEmail.set(email, completedAtMs);
+            if (isWritingTest && docRef) {
+              testResultIdByEmail.set(email, docRef);
+            }
           }
         };
 
@@ -895,7 +899,7 @@ export function TestHubContent() {
 
           const completedAtMs = toMillis(data.completedAt);
           attemptedStudents.add(email);
-          updateCompletedAt(email, completedAtMs);
+          updateCompletedAt(email, completedAtMs, isWritingTest ? `testResults:${item.id}` : undefined);
 
           // Store testResult doc ID for detail drawer (only for objective tests)
           // Only store if this is the latest attempt for this student
@@ -934,7 +938,7 @@ export function TestHubContent() {
           if (!email) return;
 
           attemptedStudents.add(email);
-          updateCompletedAt(email, toMillis(data.completedAt));
+          updateCompletedAt(email, toMillis(data.completedAt), isWritingTest ? `attempts:${item.id}` : undefined);
 
           // For writing tests, attempts is used only as completion evidence.
           // Never derive writing score from attempts to avoid showing default 0 before grading.
@@ -961,7 +965,7 @@ export function TestHubContent() {
           if (!email) return;
 
           attemptedStudents.add(email);
-          updateCompletedAt(email, toMillis(data.gradedAt ?? data.submittedAt ?? data.completedAt));
+          updateCompletedAt(email, toMillis(data.gradedAt ?? data.submittedAt ?? data.completedAt), `writing:${item.id}`);
           const writingStatus = String(data.status ?? '').toLowerCase();
 
           if (writingStatus === 'graded') {
@@ -1727,7 +1731,7 @@ export function TestHubContent() {
                         </div>
 
                         <div className="students-status-cell">
-                          {studentsTest.skill !== 'writing' && row.hasAttempted && row.testResultId ? (
+                          {row.hasAttempted && row.testResultId ? (
                             <button
                               className="students-detail-btn"
                               onClick={() => {
@@ -1735,7 +1739,7 @@ export function TestHubContent() {
                                   testResultId: row.testResultId!,
                                   testId: studentsTest.id,
                                   testName: studentsTest.name,
-                                  skill: studentsTest.skill as 'reading' | 'listening',
+                                  skill: studentsTest.skill as 'reading' | 'listening' | 'writing',
                                   studentName: row.displayName,
                                   className: row.className,
                                   rowIndex: studentsStatusRows.indexOf(row),
@@ -1869,20 +1873,36 @@ export function TestHubContent() {
         </div>
       ) : null}
       {resultDetailTarget ? (
-        <TeacherResultDetailDrawer
-          testResultId={resultDetailTarget.testResultId}
-          testId={resultDetailTarget.testId}
-          testName={resultDetailTarget.testName}
-          skill={resultDetailTarget.skill}
-          studentName={resultDetailTarget.studentName}
-          className={resultDetailTarget.className}
-          index={resultDetailTarget.rowIndex + 1}
-          onClose={() => setResultDetailTarget(null)}
-          onPrev={() => goToPrevStudent(resultDetailTarget.rowIndex, resultDetailTarget)}
-          onNext={() => goToNextStudent(resultDetailTarget.rowIndex, resultDetailTarget)}
-          hasPrev={hasPrevWithResult(resultDetailTarget.rowIndex)}
-          hasNext={hasNextWithResult(resultDetailTarget.rowIndex)}
-        />
+        resultDetailTarget.skill === 'writing' ? (
+          <TeacherWritingResultDetailDrawer
+            testResultId={resultDetailTarget.testResultId}
+            testId={resultDetailTarget.testId}
+            testName={resultDetailTarget.testName}
+            studentName={resultDetailTarget.studentName}
+            className={resultDetailTarget.className}
+            index={resultDetailTarget.rowIndex + 1}
+            onClose={() => setResultDetailTarget(null)}
+            onPrev={() => goToPrevStudent(resultDetailTarget.rowIndex, resultDetailTarget)}
+            onNext={() => goToNextStudent(resultDetailTarget.rowIndex, resultDetailTarget)}
+            hasPrev={hasPrevWithResult(resultDetailTarget.rowIndex)}
+            hasNext={hasNextWithResult(resultDetailTarget.rowIndex)}
+          />
+        ) : (
+          <TeacherResultDetailDrawer
+            testResultId={resultDetailTarget.testResultId}
+            testId={resultDetailTarget.testId}
+            testName={resultDetailTarget.testName}
+            skill={resultDetailTarget.skill}
+            studentName={resultDetailTarget.studentName}
+            className={resultDetailTarget.className}
+            index={resultDetailTarget.rowIndex + 1}
+            onClose={() => setResultDetailTarget(null)}
+            onPrev={() => goToPrevStudent(resultDetailTarget.rowIndex, resultDetailTarget)}
+            onNext={() => goToNextStudent(resultDetailTarget.rowIndex, resultDetailTarget)}
+            hasPrev={hasPrevWithResult(resultDetailTarget.rowIndex)}
+            hasNext={hasNextWithResult(resultDetailTarget.rowIndex)}
+          />
+        )
       ) : null}
     </div>
   );

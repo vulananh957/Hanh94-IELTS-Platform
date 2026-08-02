@@ -9,6 +9,7 @@ import {
   orderBy,
   limit,
   documentId,
+  getCountFromServer,
 } from 'firebase/firestore';
 import { firebaseApp } from './firebase';
 
@@ -16,6 +17,11 @@ export interface SkillStat {
   average: number;
   count: number;
   total: number;
+}
+
+export interface TestMetadata {
+  name: string;
+  skill: string;
 }
 
 export interface DashboardStats {
@@ -59,10 +65,60 @@ export function invalidateDashboardDataCache(teacherEmail: string): void {
     localStorage.removeItem(`${statsKey}_time`);
     localStorage.removeItem(activitiesKey);
     localStorage.removeItem(`${activitiesKey}_time`);
+    localStorage.removeItem('dashboard_tests_metadata_map');
+    localStorage.removeItem('dashboard_tests_metadata_map_time');
   }
 
   requestMap.delete(`stats_${teacherEmail}`);
   requestMap.delete(`activities_${teacherEmail}`);
+}
+
+/**
+ * Get tests metadata map (id -> { name, skill }) cached in localStorage for 24 hours.
+ */
+async function getTestsMetadataMap(db: ReturnType<typeof getFirestore>): Promise<Map<string, TestMetadata>> {
+  const cacheKey = 'dashboard_tests_metadata_map';
+  const timeKey = 'dashboard_tests_metadata_map_time';
+  const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+  if (typeof window !== 'undefined') {
+    const cached = localStorage.getItem(cacheKey);
+    const cachedTime = localStorage.getItem(timeKey);
+    if (cached && cachedTime && Date.now() - parseInt(cachedTime) < CACHE_TTL) {
+      try {
+        const parsed = JSON.parse(cached);
+        return new Map(Object.entries(parsed));
+      } catch (e) {
+        console.error('Error parsing cached tests metadata:', e);
+      }
+    }
+  }
+
+  console.log('⚡ Cache miss: fetching tests metadata from Firestore...');
+  const testsSnap = await getDocs(collection(db, 'tests'));
+  const testMap = new Map<string, TestMetadata>();
+  const serializeObj: Record<string, TestMetadata> = {};
+
+  testsSnap.docs.forEach((d) => {
+    const data = d.data();
+    const metadata = {
+      name: data.name || 'Test',
+      skill: data.skill || '',
+    };
+    testMap.set(d.id, metadata);
+    serializeObj[d.id] = metadata;
+  });
+
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(cacheKey, JSON.stringify(serializeObj));
+      localStorage.setItem(timeKey, Date.now().toString());
+    } catch (e) {
+      console.warn('Unable to write tests metadata to localStorage (quota exceeded or disabled):', e);
+    }
+  }
+
+  return testMap;
 }
 
 /**
@@ -215,25 +271,26 @@ export async function calculateDashboardStats(teacherEmail: string): Promise<Das
 
     console.log('⚡ Starting parallel queries for dashboard stats...');
 
-    // Launch ALL queries in parallel
-    const [testsSnapshot, attemptsSnapshot, testResultsSnapshot, writingResultsSnapshot, writingLegacySnapshot, usersSnapshot] = await Promise.all([
-      getDocs(query(collection(db, 'tests'))),
+    // Launch optimized queries in parallel
+    const [
+      totalTestsCount,
+      activeStudentsCount,
+      attemptsSnapshot,
+      testResultsSnapshot,
+      writingLegacySnapshot,
+      testsCache,
+    ] = await Promise.all([
+      getCountFromServer(collection(db, 'tests')),
+      getCountFromServer(query(collection(db, 'users'), where('role', '==', 'student'))),
       getDocs(query(collection(db, 'attempts'), where('status', '==', 'completed'))),
       getDocs(collection(db, 'testResults')),
-      getDocs(query(collection(db, 'testResults'), where('testType', '==', 'writing'))),
       getDocs(collection(db, 'writing')),
-      getDocs(collection(db, 'users')),
+      getTestsMetadataMap(db),
     ]);
 
     console.log('✅ All queries completed in', (performance.now() - perfStart).toFixed(0), 'ms');
 
-    // ── 2. Build test skill map from tests collection ───────────────────────────
-    const testsCache = new Map<string, any>();
-    testsSnapshot.docs.forEach((doc) => {
-      testsCache.set(doc.id, doc.data());
-    });
-
-    const totalTests = testsSnapshot.size;
+    const totalTests = totalTestsCount.data().count;
 
     // ── 3. Deduplicate testResults by student+test (keep latest). ──────────────
     // For objective results: keep latest by timestamp.
@@ -362,14 +419,7 @@ export async function calculateDashboardStats(teacherEmail: string): Promise<Das
     }
 
     // ── 5. Get unique students ─────────────────────────────────────────────────
-    const allStudents = new Set<string>();
-    usersSnapshot.docs.forEach((doc) => {
-      const data = doc.data();
-      if (data.role === 'student' && data.email) {
-        allStudents.add(data.email);
-      }
-    });
-    const activeStudents = allStudents.size;
+    const activeStudents = activeStudentsCount.data().count;
 
     // ── 6. Calculate skill stats from deduplicated objective results ────────────
     const skillStats = {
@@ -394,7 +444,7 @@ export async function calculateDashboardStats(teacherEmail: string): Promise<Das
       if (resultSkill === 'listening' || resultSkill === 'reading') {
         skill = resultSkill;
       } else if (resultData.testId && testsCache.has(resultData.testId)) {
-        const testSkill = String(testsCache.get(resultData.testId).skill || '').toLowerCase();
+        const testSkill = String(testsCache.get(resultData.testId)?.skill || '').toLowerCase();
         if (testSkill === 'listening' || testSkill === 'reading' || testSkill === 'writing') {
           skill = testSkill;
         }
@@ -462,7 +512,7 @@ export async function calculateDashboardStats(teacherEmail: string): Promise<Das
     for (const [key, attemptData] of latestAttempts) {
       if (attemptData.testId && testsCache.has(attemptData.testId)) {
         const test = testsCache.get(attemptData.testId);
-        if (String(test.skill || '').toLowerCase() === 'writing' && !gradedWritingKeys.has(key)) {
+        if (String(test?.skill || '').toLowerCase() === 'writing' && !gradedWritingKeys.has(key)) {
           pendingWritingAttempts += 1;
         }
       }
@@ -501,8 +551,12 @@ export async function calculateDashboardStats(teacherEmail: string): Promise<Das
     };
 
     // Cache results
-    localStorage.setItem(cacheKey, JSON.stringify(stats));
-    localStorage.setItem(`${cacheKey}_time`, Date.now().toString());
+    try {
+      localStorage.setItem(cacheKey, JSON.stringify(stats));
+      localStorage.setItem(`${cacheKey}_time`, Date.now().toString());
+    } catch (e) {
+      console.warn('Unable to write dashboard stats to localStorage (quota exceeded or disabled):', e);
+    }
 
     console.log('⚡ Performance: Dashboard stats loaded in', (performance.now() - perfStart).toFixed(0), 'ms');
     console.log('📊 Stats:', stats);
@@ -652,7 +706,7 @@ export async function getRecentActivity(teacherEmail: string): Promise<ActivityR
     });
     const [studentCache, testCache] = await Promise.all([
       batchGetUserDocuments(db, studentEmails),
-      batchGetDocumentsById(db, 'tests', testIds),
+      getTestsMetadataMap(db),
     ]);
 
     // Collect class codes
@@ -743,8 +797,12 @@ export async function getRecentActivity(teacherEmail: string): Promise<ActivityR
     console.log('📊 Accuracy: Processed', rawActivities.length, '→ Objective dedup:', deduplicatedObjectives.length, '→ Showing', finalActivities.length);
 
     // Cache results before returning
-    localStorage.setItem(cacheKey, JSON.stringify(finalActivities));
-    localStorage.setItem(`${cacheKey}_time`, Date.now().toString());
+    try {
+      localStorage.setItem(cacheKey, JSON.stringify(finalActivities));
+      localStorage.setItem(`${cacheKey}_time`, Date.now().toString());
+    } catch (e) {
+      console.warn('Unable to write recent activities to localStorage (quota exceeded or disabled):', e);
+    }
 
     return finalActivities;
     })();
