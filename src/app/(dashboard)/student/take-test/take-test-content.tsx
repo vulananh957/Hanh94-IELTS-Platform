@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getAuth, onAuthStateChanged, type User } from 'firebase/auth';
-import { addDoc, collection, doc, getDoc, getFirestore, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, doc, getDoc, getFirestore, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { ref, uploadBytes } from 'firebase/storage';
 import { firebaseApp, firebaseStorage } from '@/services/firebase';
+import { fetchStudentClassDisplayName } from '@/services/student-profile';
 import {
   calculateIELTSBand,
   countTotalQuestionsFromMetadata,
@@ -21,6 +22,11 @@ import {
   calculateMultipleChoiceScore,
   calculateScore,
 } from './take-test-utils';
+import {
+  buildEvidenceAttemptPath,
+  buildEvidenceCapturePath,
+  type EvidenceAttemptPathInput,
+} from './evidence-storage';
 import { invalidateStudentCache } from '@/services/student-dashboard';
 import { ZoomableImage } from '@/components/shared/zoomable-image';
 import './take-test.css';
@@ -226,11 +232,14 @@ export function TakeTestContent() {
   const isInitializingRef = useRef(false);
 
   // Anti-cheat evidence capture refs
-  const evidenceUploadQueueRef = useRef<Array<() => Promise<void>>>([]);
-  const lastEvidenceUploadRef = useRef(0);
   const lastHeartbeatRef = useRef(0);
+  const lastScreenFrameCaptureRef = useRef(0);
+  const lastLiveScreenFrameRef = useRef<{ blob: Blob; capturedAt: string } | null>(null);
+  const evidenceAttemptRef = useRef<EvidenceAttemptPathInput | null>(null);
+  const evidenceSequenceRef = useRef(0);
+  const cameraRequirementLostRef = useRef(false);
+  const screenRequirementLostRef = useRef(false);
   const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const evidenceVideoRef = useRef<HTMLVideoElement | null>(null);
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
   // Keep refs to latest streams so interval callbacks always access current values
   const cameraStreamRef = useRef<MediaStream | null>(null);
@@ -291,6 +300,68 @@ export function TakeTestContent() {
     }, 500);
   }, []);
 
+  // ── Monitoring evidence ──────────────────────────────────────────
+  // Evidence is always an Entire-screen frame. Webcam video is required for
+  // monitoring, but it is never used as evidence.
+  const captureLiveScreenFrame = useCallback(async (): Promise<{ blob: Blob; capturedAt: string } | null> => {
+    const [track] = screenStreamRef.current?.getVideoTracks() || [];
+    const video = screenVideoRef.current;
+    if (!track || track.readyState !== 'live' || !track.enabled || track.muted || !video || video.readyState < 2) {
+      return null;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+    const context = canvas.getContext('2d');
+    if (!context) return null;
+
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob((image) => resolve(image), 'image/jpeg', 0.75);
+    }).catch(() => null);
+
+    return blob ? { blob, capturedAt: new Date().toISOString() } : null;
+  }, []);
+
+  const refreshLastLiveScreenFrame = useCallback(async () => {
+    const now = Date.now();
+    if (now - lastScreenFrameCaptureRef.current < 15000) return;
+    lastScreenFrameCaptureRef.current = now;
+    const frame = await captureLiveScreenFrame();
+    if (frame) lastLiveScreenFrameRef.current = frame;
+  }, [captureLiveScreenFrame]);
+
+  const captureAndUploadEvidence = useCallback(async (type: string): Promise<void> => {
+    const attempt = evidenceAttemptRef.current;
+    if (!attempt) return;
+
+    const eventAt = new Date().toISOString();
+    const liveFrame = await captureLiveScreenFrame();
+    const frame = liveFrame || lastLiveScreenFrameRef.current;
+    if (!frame) {
+      console.warn('[monitoring-evidence] no valid screen frame available for', type);
+      return;
+    }
+
+    if (liveFrame) lastLiveScreenFrameRef.current = liveFrame;
+
+    const storagePath = buildEvidenceCapturePath({
+      ...attempt,
+      eventAt,
+      sequence: ++evidenceSequenceRef.current,
+      trigger: type,
+      lastLiveAt: liveFrame ? undefined : frame.capturedAt,
+    });
+
+    try {
+      await uploadBytes(ref(firebaseStorage, storagePath), frame.blob, { contentType: 'image/jpeg' });
+      console.log('[monitoring-evidence] uploaded:', storagePath);
+    } catch (err) {
+      console.warn('[monitoring-evidence] upload failed', err);
+    }
+  }, [captureLiveScreenFrame]);
+
   const recordViolation = useCallback((type: string, description: string) => {
     const violation = { type, description, timestamp: new Date().toISOString() };
     violationsRef.current = [...violationsRef.current, violation];
@@ -298,102 +369,23 @@ export function TakeTestContent() {
     setViolations(violationsRef.current);
     setWarningCount(warningCountRef.current);
     scheduleAutosave();
-    // Capture evidence screenshot for this violation (non-blocking)
-    // Intentionally NOT in dependency array to avoid TDZ; captureAndUploadEvidence is
-    // a stable function that closes over state via refs.
-    try { void captureAndUploadEvidence(type); } catch { /* evidence capture is best-effort */ }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scheduleAutosave]);
+    void captureAndUploadEvidence(type);
+  }, [captureAndUploadEvidence, scheduleAutosave]);
 
-  // ── Anti-Cheat Evidence Capture ───────────────────────────────────
-  // Capture a video frame from the camera stream as a JPEG blob and
-  // upload it to Firebase Storage under /violations/{studentUid}/{testId}/
-
-  const captureAndUploadEvidence = useCallback(
-    async (type: string): Promise<void> => {
-      if (!user || !test) return;
-      const now = Date.now();
-      const filename = `${type}_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
-
-      const safeTest = (test.name || test.id || 'unknown_test')
-        .replace(/[^a-zA-Z0-9_\-]/g, '_')
-        .slice(0, 80);
-      const studentFolder = user.uid;
-      const storagePath = `violations/${studentFolder}/${test.id}/${filename}`;
-
-      let blob: Blob | null = null;
-
-      // Try camera stream first
-      if (cameraStreamRef.current) {
-        const video = evidenceVideoRef.current;
-        if (video && video.readyState >= 2) {
-          const canvas = document.createElement('canvas');
-          canvas.width = video.videoWidth || 640;
-          canvas.height = video.videoHeight || 480;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            try {
-              blob = await new Promise<Blob | null>((resolve) => {
-                canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.75);
-              });
-            } catch { /* ignore */ }
-          }
-        }
-      }
-
-      // Fallback: try screen stream
-      if (!blob && screenStreamRef.current) {
-        const video = screenVideoRef.current;
-        if (video && video.readyState >= 2) {
-          const canvas = document.createElement('canvas');
-          canvas.width = video.videoWidth || 1280;
-          canvas.height = video.videoHeight || 720;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            try {
-              blob = await new Promise<Blob | null>((resolve) => {
-                canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.75);
-              });
-            } catch { /* ignore */ }
-          }
-        }
-      }
-
-      if (!blob) {
-        console.warn('[anti-cheat] no blob captured for', type);
-        return;
-      }
-
-      // Throttle: don't upload more than 1 evidence every 3 seconds
-      if (now - lastEvidenceUploadRef.current < 3000) {
-        return;
-      }
-      lastEvidenceUploadRef.current = now;
-
-      try {
-        const storageRef = ref(firebaseStorage, storagePath);
-        await uploadBytes(storageRef, blob);
-        console.log('[anti-cheat] evidence uploaded:', storagePath);
-      } catch (err) {
-        console.warn('[anti-cheat] evidence upload failed', err);
-      }
-    },
-    [user, test],
-  );
-
-  // Periodic heartbeat: capture evidence every 60 seconds while test is active
+  // Persist one periodic screen frame per minute, while refreshing the
+  // in-memory frame every 15 seconds for a meaningful last-live capture.
   const startHeartbeat = useCallback(() => {
     if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
-    heartbeatIntervalRef.current = setInterval(async () => {
+    void refreshLastLiveScreenFrame();
+    heartbeatIntervalRef.current = setInterval(() => {
       if (!isStartedRef.current) return;
+      void refreshLastLiveScreenFrame();
       const now = Date.now();
       if (now - lastHeartbeatRef.current < 60000) return;
       lastHeartbeatRef.current = now;
-      await captureAndUploadEvidence('heartbeat');
-    }, 15000); // check every 15s, but only capture if 60s has passed
-  }, [captureAndUploadEvidence]);
+      void captureAndUploadEvidence('heartbeat');
+    }, 5000);
+  }, [captureAndUploadEvidence, refreshLastLiveScreenFrame]);
 
   const stopHeartbeat = useCallback(() => {
     if (heartbeatIntervalRef.current) {
@@ -406,6 +398,14 @@ export function TakeTestContent() {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
   }, []);
+
+  const pauseForMonitoringViolation = useCallback((type: string, description: string) => {
+    if (!isStartedRef.current) return;
+    isPausedRef.current = true;
+    setIsPaused(true);
+    recordViolation(type, description);
+    stopTimer();
+  }, [recordViolation, stopTimer]);
 
   const clearListeningGapTimers = useCallback(() => {
     if (listeningGapTimerRef.current) clearInterval(listeningGapTimerRef.current);
@@ -455,6 +455,8 @@ export function TakeTestContent() {
     stopHeartbeat();
     isStartedRef.current = false;
     setIsStarted(false);
+    lastLiveScreenFrameRef.current = null;
+    evidenceAttemptRef.current = null;
 
     screenStreamRef.current?.getTracks().forEach((track) => track.stop());
     screenStreamRef.current = null;
@@ -468,7 +470,7 @@ export function TakeTestContent() {
     if (document.fullscreenElement) {
       void document.exitFullscreen().catch(() => undefined);
     }
-  }, [stopTimer]);
+  }, [stopHeartbeat, stopTimer]);
 
   const startTimer = useCallback((seconds: number) => {
     stopTimer();
@@ -525,17 +527,19 @@ export function TakeTestContent() {
 
       const [track] = stream.getVideoTracks();
       track?.addEventListener('ended', () => {
-        if (!isStartedRef.current) return;
-        recordViolation('camera_stopped', 'Camera stream stopped during the test');
+        if (cameraRequirementLostRef.current) return;
+        cameraRequirementLostRef.current = true;
+        pauseForMonitoringViolation('camera_stopped', 'Camera stream stopped during the test');
       });
 
+      cameraRequirementLostRef.current = false;
       setCameraStream(stream);
       if (cameraVideoRef.current) cameraVideoRef.current.srcObject = stream;
       return true;
     } catch {
       return false;
     }
-  }, [recordViolation]);
+  }, [pauseForMonitoringViolation]);
 
   const startScreenShare = useCallback(async (): Promise<boolean> => {
     try {
@@ -546,28 +550,23 @@ export function TakeTestContent() {
       const [track] = stream.getVideoTracks();
       const settings = track?.getSettings?.() || {};
       const displaySurface = (settings as MediaTrackSettings & { displaySurface?: string }).displaySurface;
-      const label = track?.label || '';
 
-      if (displaySurface && displaySurface !== 'monitor') {
+      // Evidence is only valid when the browser explicitly confirms that the
+      // Student shared their entire display. If this cannot be verified, do
+      // not silently accept a window or tab stream.
+      if (displaySurface !== 'monitor') {
         stream.getTracks().forEach((item) => item.stop());
-        showNotification('warning', 'Please choose Entire screen when sharing your screen.');
-        return false;
-      }
-
-      if (!displaySurface && label && !/entire screen|screen|monitor/i.test(label)) {
-        stream.getTracks().forEach((item) => item.stop());
-        showNotification('warning', 'Please choose Entire screen when sharing your screen.');
+        showNotification('warning', 'Please choose Entire screen in a browser that supports screen verification.');
         return false;
       }
 
       track?.addEventListener('ended', () => {
-        if (!isStartedRef.current) return;
-        isPausedRef.current = true;
-        setIsPaused(true);
-        recordViolation('screen_sharing_stopped', 'Student stopped screen sharing');
-        stopTimer();
+        if (screenRequirementLostRef.current) return;
+        screenRequirementLostRef.current = true;
+        pauseForMonitoringViolation('screen_sharing_stopped', 'Student stopped screen sharing');
       });
 
+      screenRequirementLostRef.current = false;
       screenStreamRef.current = stream;
       setScreenStream(stream);
       if (screenVideoRef.current) screenVideoRef.current.srcObject = stream;
@@ -575,7 +574,7 @@ export function TakeTestContent() {
     } catch {
       return false;
     }
-  }, [recordViolation, stopTimer]);
+  }, [pauseForMonitoringViolation, showNotification]);
 
   const requestFullscreen = useCallback(async (): Promise<boolean> => {
     try {
@@ -586,13 +585,21 @@ export function TakeTestContent() {
     }
   }, []);
 
-  const resumeScreenShare = useCallback(async () => {
-    const ok = await startScreenShare();
-    if (!ok) return;
+  const resumeMonitoring = useCallback(async () => {
+    const cameraTrack = cameraStreamRef.current?.getVideoTracks()[0];
+    const screenTrack = screenStreamRef.current?.getVideoTracks()[0];
+    const cameraOk = cameraTrack?.readyState === 'live' && cameraTrack.enabled && !cameraTrack.muted
+      ? true
+      : await startCamera();
+    if (!cameraOk) return;
+    const screenOk = screenTrack?.readyState === 'live' && screenTrack.enabled && !screenTrack.muted
+      ? true
+      : await startScreenShare();
+    if (!screenOk) return;
     isPausedRef.current = false;
     setIsPaused(false);
     startTimer(remainingRef.current || durationMinutes * 60);
-  }, [durationMinutes, startScreenShare, startTimer]);
+  }, [durationMinutes, startCamera, startScreenShare, startTimer]);
 
   const resumeFullscreen = useCallback(async () => {
     const ok = await requestFullscreen();
@@ -668,9 +675,6 @@ export function TakeTestContent() {
     if (cameraVideoRef.current && cameraStream) {
       cameraVideoRef.current.srcObject = cameraStream;
     }
-    if (evidenceVideoRef.current && cameraStream) {
-      evidenceVideoRef.current.srcObject = cameraStream;
-    }
     // Keep refs in sync so interval callbacks always have current values
     cameraStreamRef.current = cameraStream;
   }, [cameraStream]);
@@ -713,7 +717,7 @@ export function TakeTestContent() {
 
   // ── Track-enable monitoring: detect when camera/screen tracks are muted ──
   useEffect(() => {
-    if (!isStartedRef.current) return;
+    if (!isStarted) return;
 
     const checkInterval = setInterval(() => {
       if (!isStartedRef.current) return;
@@ -722,8 +726,9 @@ export function TakeTestContent() {
       if (cameraStreamRef.current) {
         const tracks = cameraStreamRef.current.getVideoTracks();
         tracks.forEach((track) => {
-          if (!track.enabled) {
-            recordViolation('camera_disabled', 'Camera video track was disabled during the test');
+          if (!track.enabled && !cameraRequirementLostRef.current) {
+            cameraRequirementLostRef.current = true;
+            pauseForMonitoringViolation('camera_disabled', 'Camera video track was disabled during the test');
           }
         });
       }
@@ -732,15 +737,16 @@ export function TakeTestContent() {
       if (screenStreamRef.current) {
         const tracks = screenStreamRef.current.getVideoTracks();
         tracks.forEach((track) => {
-          if (!track.enabled) {
-            recordViolation('screen_share_disabled', 'Screen sharing track was disabled during the test');
+          if (!track.enabled && !screenRequirementLostRef.current) {
+            screenRequirementLostRef.current = true;
+            pauseForMonitoringViolation('screen_share_disabled', 'Screen sharing track was disabled during the test');
           }
         });
       }
     }, 5000); // poll every 5 seconds
 
     return () => clearInterval(checkInterval);
-  }, [recordViolation]);
+  }, [isStarted, pauseForMonitoringViolation]);
 
   useEffect(() => () => {
     stopMonitoring();
@@ -896,20 +902,47 @@ export function TakeTestContent() {
   const beginTest = async () => {
     if (!test || !user) return;
 
-    // Create draft document for autosave
+    // Create a draft and snapshot the human-readable evidence context once.
+    // The Storage folder must remain understandable even if the student later
+    // moves class or their profile name changes.
     const db = getFirestore(firebaseApp);
+    const attemptStartedAt = new Date().toISOString();
+    const className = (await fetchStudentClassDisplayName(user.email || '')) || 'Chưa xếp lớp';
+    const draftRef = doc(collection(db, 'testResults'));
+    const evidenceAttempt: EvidenceAttemptPathInput = {
+      testName: test.name || 'Untitled test',
+      testId: test.id,
+      className,
+      studentName: user.displayName || user.email?.split('@')[0] || 'Student',
+      studentUid: user.uid,
+      attemptId: attemptIdRef.current || draftRef.id,
+      attemptStartedAt,
+    };
+    evidenceAttemptRef.current = evidenceAttempt;
+    evidenceSequenceRef.current = 0;
+    lastLiveScreenFrameRef.current = null;
+    lastScreenFrameCaptureRef.current = 0;
+
     try {
-      const draftRef = await addDoc(collection(db, 'testResults'), {
+      await setDoc(draftRef, {
         testId: test.id,
         testName: test.name || 'Objective Test',
         testType: test.skill || 'reading',
         studentEmail: user.email,
         studentName: user.displayName || user.email?.split('@')[0] || 'Student',
         studentUid: user.uid,
+        className,
+        attemptId: evidenceAttempt.attemptId,
         status: 'in_progress',
         startedAt: serverTimestamp(),
         answers: {},
         testOwnerUid: test.ownerUid || null,
+        monitoring: {
+          evidencePath: buildEvidenceAttemptPath(evidenceAttempt),
+          evidenceVersion: 1,
+          className,
+          attemptStartedAt,
+        },
       });
       draftIdRef.current = draftRef.id;
     } catch (err) {
@@ -1564,9 +1597,9 @@ export function TakeTestContent() {
               </>
             ) : (
               <>
-                <h2>Screen sharing required</h2>
-                <p>To continue, re-share your entire screen.</p>
-                <button type="button" className="tt-primary" onClick={resumeScreenShare}>Re-share screen</button>
+                <h2>Monitoring required</h2>
+                <p>To continue, restore your camera and share your entire screen.</p>
+                <button type="button" className="tt-primary" onClick={resumeMonitoring}>Restore monitoring</button>
               </>
             )}
           </div>
@@ -1676,8 +1709,7 @@ export function TakeTestContent() {
       >
         <video ref={cameraVideoRef} autoPlay muted playsInline aria-label="Camera monitoring feed" />
       </div>
-      {/* Hidden video elements for evidence capture */}
-      <video ref={evidenceVideoRef} autoPlay muted playsInline style={{ display: 'none' }} aria-hidden="true" />
+      {/* The active Entire-screen stream is the only source for evidence capture. */}
       <video ref={screenVideoRef} autoPlay muted playsInline style={{ display: 'none' }} aria-hidden="true" />
 
       {/* Notification toasts — always visible above everything */}

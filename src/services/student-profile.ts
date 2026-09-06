@@ -11,7 +11,12 @@ import {
 } from 'firebase/firestore';
 import { firebaseApp } from './firebase';
 
-export async function fetchStudentClassName(studentEmail: string): Promise<string | null> {
+type StudentClass = {
+  id: string;
+  displayName: string | null;
+};
+
+async function fetchStudentClass(studentEmail: string): Promise<StudentClass | null> {
   if (!studentEmail) return null;
 
   const db = getFirestore(firebaseApp);
@@ -25,17 +30,27 @@ export async function fetchStudentClassName(studentEmail: string): Promise<strin
     const classSnap = await getDoc(doc(db, 'classes', classId));
     if (classSnap.exists()) {
       const data = classSnap.data();
-      return data.name || data.code || classId;
+      return { id: classSnap.id, displayName: data.name || data.code || null };
     }
 
     const classQuery = await getDocs(query(collection(db, 'classes'), where('code', '==', classId)));
     if (!classQuery.empty) {
-      const data = classQuery.docs[0].data();
-      return data.name || data.code || classId;
+      const classDoc = classQuery.docs[0];
+      const data = classDoc.data();
+      return { id: classDoc.id, displayName: data.name || data.code || null };
     }
   } catch {
     return null;
   }
 
   return null;
+}
+
+export async function fetchStudentClassName(studentEmail: string): Promise<string | null> {
+  const studentClass = await fetchStudentClass(studentEmail);
+  return studentClass?.displayName || studentClass?.id || null;
+}
+
+export async function fetchStudentClassDisplayName(studentEmail: string): Promise<string | null> {
+  return (await fetchStudentClass(studentEmail))?.displayName || null;
 }
