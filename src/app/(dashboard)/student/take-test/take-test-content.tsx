@@ -27,6 +27,7 @@ import {
   buildEvidenceCapturePath,
   type EvidenceAttemptPathInput,
 } from './evidence-storage';
+import { getMonitoringRecoveryStep, isLiveMonitoringTrack } from './monitoring-recovery';
 import { invalidateStudentCache } from '@/services/student-dashboard';
 import { ZoomableImage } from '@/components/shared/zoomable-image';
 import './take-test.css';
@@ -588,28 +589,57 @@ export function TakeTestContent() {
   const resumeMonitoring = useCallback(async () => {
     const cameraTrack = cameraStreamRef.current?.getVideoTracks()[0];
     const screenTrack = screenStreamRef.current?.getVideoTracks()[0];
-    const cameraOk = cameraTrack?.readyState === 'live' && cameraTrack.enabled && !cameraTrack.muted
+    const cameraOk = isLiveMonitoringTrack(cameraTrack)
       ? true
       : await startCamera();
     if (!cameraOk) return;
-    const screenOk = screenTrack?.readyState === 'live' && screenTrack.enabled && !screenTrack.muted
+    const screenOk = isLiveMonitoringTrack(screenTrack)
       ? true
       : await startScreenShare();
     if (!screenOk) return;
-    isPausedRef.current = false;
-    setIsPaused(false);
-    startTimer(remainingRef.current || durationMinutes * 60);
-  }, [durationMinutes, startCamera, startScreenShare, startTimer]);
 
-  const resumeFullscreen = useCallback(async () => {
-    const ok = await requestFullscreen();
-    if (!ok) return;
+    // Browsers can leave fullscreen while the screen-share picker is open.
+    // Keep the attempt paused so the next user gesture can restore fullscreen.
+    if (!document.fullscreenElement) {
+      isPausedRef.current = true;
+      isFullscreenPausedRef.current = true;
+      setIsPaused(true);
+      setIsFullscreenPaused(true);
+      stopTimer();
+      return;
+    }
+
     isPausedRef.current = false;
     isFullscreenPausedRef.current = false;
     setIsPaused(false);
     setIsFullscreenPaused(false);
     startTimer(remainingRef.current || durationMinutes * 60);
-  }, [durationMinutes, requestFullscreen, startTimer]);
+  }, [durationMinutes, startCamera, startScreenShare, startTimer, stopTimer]);
+
+  const resumeFullscreen = useCallback(async () => {
+    const ok = await requestFullscreen();
+    if (!ok) return;
+
+    const recoveryStep = getMonitoringRecoveryStep({
+      cameraLive: isLiveMonitoringTrack(cameraStreamRef.current?.getVideoTracks()[0]),
+      screenLive: isLiveMonitoringTrack(screenStreamRef.current?.getVideoTracks()[0]),
+      fullscreenActive: Boolean(document.fullscreenElement),
+    });
+    if (recoveryStep !== 'ready') {
+      isPausedRef.current = true;
+      isFullscreenPausedRef.current = recoveryStep === 'fullscreen';
+      setIsPaused(true);
+      setIsFullscreenPaused(recoveryStep === 'fullscreen');
+      stopTimer();
+      return;
+    }
+
+    isPausedRef.current = false;
+    isFullscreenPausedRef.current = false;
+    setIsPaused(false);
+    setIsFullscreenPaused(false);
+    startTimer(remainingRef.current || durationMinutes * 60);
+  }, [durationMinutes, requestFullscreen, startTimer, stopTimer]);
 
   useEffect(() => {
     const auth = getAuth(firebaseApp);
@@ -686,7 +716,17 @@ export function TakeTestContent() {
 
   useEffect(() => {
     const onVisibilityChange = () => {
-      if (!isStartedRef.current || !document.hidden) return;
+      if (!isStartedRef.current) return;
+      if (!document.hidden) {
+        if (!document.fullscreenElement) {
+          isPausedRef.current = true;
+          isFullscreenPausedRef.current = true;
+          setIsPaused(true);
+          setIsFullscreenPaused(true);
+          stopTimer();
+        }
+        return;
+      }
       const now = Date.now();
       if (now - lastTabSwitchRef.current < 5000) return;
       lastTabSwitchRef.current = now;
@@ -1517,6 +1557,14 @@ export function TakeTestContent() {
   const task1Words = (answers.writingTask1 || '').trim() ? (answers.writingTask1 || '').trim().split(/\s+/).length : 0;
   const task2Words = (answers.writingTask2 || '').trim() ? (answers.writingTask2 || '').trim().split(/\s+/).length : 0;
 
+  const monitoringRecoveryStep = isPaused
+    ? getMonitoringRecoveryStep({
+        cameraLive: isLiveMonitoringTrack(cameraStreamRef.current?.getVideoTracks()[0]),
+        screenLive: isLiveMonitoringTrack(screenStreamRef.current?.getVideoTracks()[0]),
+        fullscreenActive: typeof document !== 'undefined' && Boolean(document.fullscreenElement),
+      })
+    : 'ready';
+
   if (isLoading) {
     return <div className="tt-loading">Loading test...</div>;
   }
@@ -1589,7 +1637,7 @@ export function TakeTestContent() {
       {isPaused && (
         <div className="tt-pause-overlay">
           <div>
-            {isFullscreenPaused ? (
+            {monitoringRecoveryStep === 'fullscreen' ? (
               <>
                 <h2>Fullscreen required</h2>
                 <p>You left fullscreen mode. Return to fullscreen to continue the test.</p>
