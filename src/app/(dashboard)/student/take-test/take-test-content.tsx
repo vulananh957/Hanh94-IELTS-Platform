@@ -1685,7 +1685,7 @@ export function TakeTestContent() {
               </>
             ) : (
               <>
-                <div className="tt-start-icon"><i className="fas fa-check-circle" style={{ color: '#10b981' }} /></div>
+                <div className="tt-start-icon"><i className="fas fa-check-circle" /></div>
                 <h1>Monitoring Confirmed</h1>
                 <p>Camera and screen sharing are active and ready.</p>
                 <div className="tt-setup-list">
