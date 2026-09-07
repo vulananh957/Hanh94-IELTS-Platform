@@ -27,7 +27,13 @@ import {
   buildEvidenceCapturePath,
   type EvidenceAttemptPathInput,
 } from './evidence-storage';
-import { getMonitoringRecoveryStep, isLiveMonitoringTrack } from './monitoring-recovery';
+import {
+  ensureMonitoringStreams,
+  getMonitoringRecoveryStep,
+  getMonitoringViolationType,
+  isEntireScreenShare,
+  isLiveMonitoringTrack,
+} from './monitoring-recovery';
 import { invalidateStudentCache } from '@/services/student-dashboard';
 import { ZoomableImage } from '@/components/shared/zoomable-image';
 import './take-test.css';
@@ -202,8 +208,7 @@ export function TakeTestContent() {
   const remainingRef = useRef(0);
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
-  const [isFullscreenPaused, setIsFullscreenPaused] = useState(false);
-  const isFullscreenPausedRef = useRef(false);
+  const [isFullscreenActive, setIsFullscreenActive] = useState(false);
   const [violations, setViolations] = useState<Array<{ type: string; description: string; timestamp: string }>>([]);
   const violationsRef = useRef<Array<{ type: string; description: string; timestamp: string }>>([]);
   const [warningCount, setWarningCount] = useState(0);
@@ -458,15 +463,20 @@ export function TakeTestContent() {
     setIsStarted(false);
     lastLiveScreenFrameRef.current = null;
     evidenceAttemptRef.current = null;
+    setIsMonitoringReady(false);
+    setIsFullscreenActive(false);
+    cameraRequirementLostRef.current = false;
+    screenRequirementLostRef.current = false;
+    isPausedRef.current = false;
+    setIsPaused(false);
 
     screenStreamRef.current?.getTracks().forEach((track) => track.stop());
     screenStreamRef.current = null;
     setScreenStream(null);
 
-    setCameraStream((stream) => {
-      stream?.getTracks().forEach((track) => track.stop());
-      return null;
-    });
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current = null;
+    setCameraStream(null);
 
     if (document.fullscreenElement) {
       void document.exitFullscreen().catch(() => undefined);
@@ -520,6 +530,10 @@ export function TakeTestContent() {
   }, [clearListeningGapTimers]);
 
   const startCamera = useCallback(async (): Promise<boolean> => {
+    // Reuse existing live stream if already active
+    const existingTrack = cameraStreamRef.current?.getVideoTracks()[0];
+    if (isLiveMonitoringTrack(existingTrack)) return true;
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
@@ -528,12 +542,15 @@ export function TakeTestContent() {
 
       const [track] = stream.getVideoTracks();
       track?.addEventListener('ended', () => {
+        if (cameraStreamRef.current?.getVideoTracks()[0] !== track) return;
         if (cameraRequirementLostRef.current) return;
         cameraRequirementLostRef.current = true;
+        setIsMonitoringReady(false);
         pauseForMonitoringViolation('camera_stopped', 'Camera stream stopped during the test');
       });
 
       cameraRequirementLostRef.current = false;
+      cameraStreamRef.current = stream;
       setCameraStream(stream);
       if (cameraVideoRef.current) cameraVideoRef.current.srcObject = stream;
       return true;
@@ -543,27 +560,39 @@ export function TakeTestContent() {
   }, [pauseForMonitoringViolation]);
 
   const startScreenShare = useCallback(async (): Promise<boolean> => {
+    // Reuse existing live stream if already active to prevent double prompts
+    const existingTrack = screenStreamRef.current?.getVideoTracks()[0];
+    if (isLiveMonitoringTrack(existingTrack)) return true;
+
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { cursor: 'always' } as MediaTrackConstraints,
+        video: {
+          cursor: 'always',
+          displaySurface: 'monitor',
+        } as MediaTrackConstraints,
         audio: false,
+        // @ts-expect-error - Chromium display surface preference hints
+        selfBrowserSurface: 'exclude',
+        surfaceSwitching: 'include',
+        monitorTypeSurfaces: 'include',
       });
       const [track] = stream.getVideoTracks();
       const settings = track?.getSettings?.() || {};
       const displaySurface = (settings as MediaTrackSettings & { displaySurface?: string }).displaySurface;
 
-      // Evidence is only valid when the browser explicitly confirms that the
-      // Student shared their entire display. If this cannot be verified, do
-      // not silently accept a window or tab stream.
-      if (displaySurface !== 'monitor') {
+      // Evidence is valid only when the browser explicitly confirms that the
+      // student shared their entire display.
+      if (!isEntireScreenShare(displaySurface)) {
         stream.getTracks().forEach((item) => item.stop());
         showNotification('warning', 'Please choose Entire screen in a browser that supports screen verification.');
         return false;
       }
 
       track?.addEventListener('ended', () => {
+        if (screenStreamRef.current?.getVideoTracks()[0] !== track) return;
         if (screenRequirementLostRef.current) return;
         screenRequirementLostRef.current = true;
+        setIsMonitoringReady(false);
         pauseForMonitoringViolation('screen_sharing_stopped', 'Student stopped screen sharing');
       });
 
@@ -580,65 +609,91 @@ export function TakeTestContent() {
   const requestFullscreen = useCallback(async (): Promise<boolean> => {
     try {
       await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
-      return true;
+      const active = Boolean(document.fullscreenElement);
+      setIsFullscreenActive(active);
+      return active;
     } catch {
+      setIsFullscreenActive(false);
       return false;
     }
   }, []);
 
   const resumeMonitoring = useCallback(async () => {
-    const cameraTrack = cameraStreamRef.current?.getVideoTracks()[0];
-    const screenTrack = screenStreamRef.current?.getVideoTracks()[0];
-    const cameraOk = isLiveMonitoringTrack(cameraTrack)
-      ? true
-      : await startCamera();
-    if (!cameraOk) return;
-    const screenOk = isLiveMonitoringTrack(screenTrack)
-      ? true
-      : await startScreenShare();
-    if (!screenOk) return;
+    if (isInitializingRef.current) return;
+    isInitializingRef.current = true;
+    setIsInitializing(true);
 
-    // Browsers can leave fullscreen while the screen-share picker is open.
-    // Keep the attempt paused so the next user gesture can restore fullscreen.
-    if (!document.fullscreenElement) {
-      isPausedRef.current = true;
-      isFullscreenPausedRef.current = true;
-      setIsPaused(true);
-      setIsFullscreenPaused(true);
-      stopTimer();
-      return;
+    try {
+      const cameraTrack = cameraStreamRef.current?.getVideoTracks()[0];
+      const screenTrack = screenStreamRef.current?.getVideoTracks()[0];
+      const result = await ensureMonitoringStreams({
+        cameraLive: isLiveMonitoringTrack(cameraTrack),
+        screenLive: isLiveMonitoringTrack(screenTrack),
+        requestCamera: startCamera,
+        requestScreen: startScreenShare,
+      });
+      if (!result.ready) {
+        showNotification(
+          'error',
+          result.missing === 'camera'
+            ? 'Camera access is required to continue the test.'
+            : 'Entire screen sharing is required to continue the test.',
+        );
+        return;
+      }
+
+      // Browsers can leave fullscreen while the screen-share picker is open.
+      // Keep the attempt paused so the next user gesture can restore fullscreen.
+      if (!document.fullscreenElement) {
+        isPausedRef.current = true;
+        setIsPaused(true);
+        setIsFullscreenActive(false);
+        stopTimer();
+        return;
+      }
+
+      isPausedRef.current = false;
+      setIsPaused(false);
+      setIsFullscreenActive(true);
+      startTimer(remainingRef.current || durationMinutes * 60);
+    } finally {
+      isInitializingRef.current = false;
+      setIsInitializing(false);
     }
-
-    isPausedRef.current = false;
-    isFullscreenPausedRef.current = false;
-    setIsPaused(false);
-    setIsFullscreenPaused(false);
-    startTimer(remainingRef.current || durationMinutes * 60);
-  }, [durationMinutes, startCamera, startScreenShare, startTimer, stopTimer]);
+  }, [durationMinutes, showNotification, startCamera, startScreenShare, startTimer, stopTimer]);
 
   const resumeFullscreen = useCallback(async () => {
-    const ok = await requestFullscreen();
-    if (!ok) return;
+    if (isInitializingRef.current) return;
+    isInitializingRef.current = true;
+    setIsInitializing(true);
 
-    const recoveryStep = getMonitoringRecoveryStep({
-      cameraLive: isLiveMonitoringTrack(cameraStreamRef.current?.getVideoTracks()[0]),
-      screenLive: isLiveMonitoringTrack(screenStreamRef.current?.getVideoTracks()[0]),
-      fullscreenActive: Boolean(document.fullscreenElement),
-    });
-    if (recoveryStep !== 'ready') {
-      isPausedRef.current = true;
-      isFullscreenPausedRef.current = recoveryStep === 'fullscreen';
-      setIsPaused(true);
-      setIsFullscreenPaused(recoveryStep === 'fullscreen');
-      stopTimer();
-      return;
+    try {
+      if (!document.fullscreenElement) {
+        const ok = await requestFullscreen();
+        if (!ok) return;
+      }
+
+      const recoveryStep = getMonitoringRecoveryStep({
+        cameraLive: isLiveMonitoringTrack(cameraStreamRef.current?.getVideoTracks()[0]),
+        screenLive: isLiveMonitoringTrack(screenStreamRef.current?.getVideoTracks()[0]),
+        fullscreenActive: Boolean(document.fullscreenElement),
+      });
+      if (recoveryStep !== 'ready') {
+        isPausedRef.current = true;
+        setIsPaused(true);
+        setIsFullscreenActive(Boolean(document.fullscreenElement));
+        stopTimer();
+        return;
+      }
+
+      isPausedRef.current = false;
+      setIsPaused(false);
+      setIsFullscreenActive(true);
+      startTimer(remainingRef.current || durationMinutes * 60);
+    } finally {
+      isInitializingRef.current = false;
+      setIsInitializing(false);
     }
-
-    isPausedRef.current = false;
-    isFullscreenPausedRef.current = false;
-    setIsPaused(false);
-    setIsFullscreenPaused(false);
-    startTimer(remainingRef.current || durationMinutes * 60);
   }, [durationMinutes, requestFullscreen, startTimer, stopTimer]);
 
   useEffect(() => {
@@ -699,7 +754,7 @@ export function TakeTestContent() {
     return () => {
       active = false;
     };
-  }, [testId, user]);
+  }, [clearListeningGapTimers, testId, user]);
 
   useEffect(() => {
     if (cameraVideoRef.current && cameraStream) {
@@ -718,11 +773,11 @@ export function TakeTestContent() {
     const onVisibilityChange = () => {
       if (!isStartedRef.current) return;
       if (!document.hidden) {
-        if (!document.fullscreenElement) {
+        const fullscreenActive = Boolean(document.fullscreenElement);
+        setIsFullscreenActive(fullscreenActive);
+        if (!fullscreenActive) {
           isPausedRef.current = true;
-          isFullscreenPausedRef.current = true;
           setIsPaused(true);
-          setIsFullscreenPaused(true);
           stopTimer();
         }
         return;
@@ -737,12 +792,12 @@ export function TakeTestContent() {
 
     const onFullscreenChange = () => {
       if (!isStartedRef.current) return;
-      if (!document.fullscreenElement) {
+      const fullscreenActive = Boolean(document.fullscreenElement);
+      setIsFullscreenActive(fullscreenActive);
+      if (!fullscreenActive) {
         recordViolation('fullscreen_exit', 'User exited fullscreen mode');
         isPausedRef.current = true;
-        isFullscreenPausedRef.current = true;
         setIsPaused(true);
-        setIsFullscreenPaused(true);
         stopTimer();
       }
     };
@@ -762,26 +817,18 @@ export function TakeTestContent() {
     const checkInterval = setInterval(() => {
       if (!isStartedRef.current) return;
 
-      // Check camera track
-      if (cameraStreamRef.current) {
-        const tracks = cameraStreamRef.current.getVideoTracks();
-        tracks.forEach((track) => {
-          if (!track.enabled && !cameraRequirementLostRef.current) {
-            cameraRequirementLostRef.current = true;
-            pauseForMonitoringViolation('camera_disabled', 'Camera video track was disabled during the test');
-          }
-        });
+      const cameraTrack = cameraStreamRef.current?.getVideoTracks()[0];
+      const cameraViolation = getMonitoringViolationType('camera', cameraTrack);
+      if (cameraViolation && !cameraRequirementLostRef.current) {
+        cameraRequirementLostRef.current = true;
+        pauseForMonitoringViolation(cameraViolation, 'Camera monitoring became unavailable during the test');
       }
 
-      // Check screen share track
-      if (screenStreamRef.current) {
-        const tracks = screenStreamRef.current.getVideoTracks();
-        tracks.forEach((track) => {
-          if (!track.enabled && !screenRequirementLostRef.current) {
-            screenRequirementLostRef.current = true;
-            pauseForMonitoringViolation('screen_share_disabled', 'Screen sharing track was disabled during the test');
-          }
-        });
+      const screenTrack = screenStreamRef.current?.getVideoTracks()[0];
+      const screenViolation = getMonitoringViolationType('screen', screenTrack);
+      if (screenViolation && !screenRequirementLostRef.current) {
+        screenRequirementLostRef.current = true;
+        pauseForMonitoringViolation(screenViolation, 'Entire screen sharing became unavailable during the test');
       }
     }, 5000); // poll every 5 seconds
 
@@ -792,7 +839,7 @@ export function TakeTestContent() {
     stopMonitoring();
     if (autosaveRef.current) clearTimeout(autosaveRef.current);
     clearListeningGapTimers();
-  }, [stopMonitoring]);
+  }, [clearListeningGapTimers, stopMonitoring]);
 
   const setSingleAnswer = (key: string, value: string) => {
     if (isPausedRef.current) {
@@ -888,37 +935,27 @@ export function TakeTestContent() {
     return true;
   };
 
-  const startTest = async () => {
-    if (!test || isInitializingRef.current) return;
-
-    isInitializingRef.current = true;
-    setIsInitializing(true);
-
-    const cameraOk = await startCamera();
-    if (!cameraOk) {
-      showNotification('error', 'Camera access is required to take this test.');
-      isInitializingRef.current = false;
-      setIsInitializing(false);
-      return;
-    }
-
-    const screenOk = await startScreenShare();
-    if (!screenOk) {
-      showNotification('error', 'Screen sharing is required to take this test.');
-      isInitializingRef.current = false;
-      setIsInitializing(false);
-      return;
-    }
-
-    const fullscreenOk = await requestFullscreen();
-    if (!fullscreenOk) {
-      showNotification('error', 'Fullscreen mode is required to take this test.');
-      isInitializingRef.current = false;
-      setIsInitializing(false);
-      return;
-    }
+  const proceedToStartAttempt = async () => {
+    if (!test || !user) return;
 
     try {
+      const cameraLive = isLiveMonitoringTrack(cameraStreamRef.current?.getVideoTracks()[0]);
+      const screenLive = isLiveMonitoringTrack(screenStreamRef.current?.getVideoTracks()[0]);
+      if (!cameraLive || !screenLive) {
+        setIsMonitoringReady(false);
+        showNotification('error', 'Camera and Entire screen sharing must remain active before the test begins.');
+        return;
+      }
+
+      if (!document.fullscreenElement) {
+        await requestFullscreen();
+      }
+
+      if (!document.fullscreenElement) {
+        showNotification('error', 'Fullscreen mode is required to take this test.');
+        return;
+      }
+
       const response = await callFunction<{ attemptId: string }>('/startAttempt', 'POST', {
         examId: null,
         testId: test.id,
@@ -926,16 +963,42 @@ export function TakeTestContent() {
       attemptIdRef.current = response.attemptId;
       setAttemptId(response.attemptId);
       setIsMonitoringReady(false);
-      beginTest();
-      isInitializingRef.current = false;
-      setIsInitializing(false);
+      await beginTest();
     } catch (err) {
       stopMonitoring();
+      showNotification('error', err instanceof Error ? err.message : 'Failed to start test. Please try again.');
+    }
+  };
+
+  const startTest = async () => {
+    if (!test || isInitializingRef.current) return;
+
+    isInitializingRef.current = true;
+    setIsInitializing(true);
+
+    try {
+      const result = await ensureMonitoringStreams({
+        cameraLive: isLiveMonitoringTrack(cameraStreamRef.current?.getVideoTracks()[0]),
+        screenLive: isLiveMonitoringTrack(screenStreamRef.current?.getVideoTracks()[0]),
+        requestCamera: startCamera,
+        requestScreen: startScreenShare,
+      });
+      if (!result.ready) {
+        showNotification(
+          'error',
+          result.missing === 'camera'
+            ? 'Camera access is required to take this test.'
+            : 'Entire screen sharing is required to take this test.',
+        );
+        return;
+      }
+
+      // Fullscreen requires a fresh user gesture after the permission dialogs.
+      // Move to the confirmation step instead of invoking screen sharing again.
+      setIsMonitoringReady(true);
+    } finally {
       isInitializingRef.current = false;
       setIsInitializing(false);
-      isFullscreenPausedRef.current = false;
-      setIsFullscreenPaused(false);
-      showNotification('error', err instanceof Error ? err.message : 'Failed to start test. Please try again.');
     }
   };
 
@@ -992,7 +1055,14 @@ export function TakeTestContent() {
     isStartedRef.current = true;
     setIsStarted(true);
     setHasTestBegun(true);
-    startTimer(durationMinutes * 60);
+    const fullscreenActive = Boolean(document.fullscreenElement);
+    setIsFullscreenActive(fullscreenActive);
+    if (!fullscreenActive) {
+      isPausedRef.current = true;
+      setIsPaused(true);
+    } else {
+      startTimer(durationMinutes * 60);
+    }
     startHeartbeat(); // Begin periodic evidence heartbeat
   };
 
@@ -1561,7 +1631,7 @@ export function TakeTestContent() {
     ? getMonitoringRecoveryStep({
         cameraLive: isLiveMonitoringTrack(cameraStreamRef.current?.getVideoTracks()[0]),
         screenLive: isLiveMonitoringTrack(screenStreamRef.current?.getVideoTracks()[0]),
-        fullscreenActive: typeof document !== 'undefined' && Boolean(document.fullscreenElement),
+        fullscreenActive: isFullscreenActive,
       })
     : 'ready';
 
@@ -1617,16 +1687,27 @@ export function TakeTestContent() {
               <>
                 <div className="tt-start-icon"><i className="fas fa-check-circle" style={{ color: '#10b981' }} /></div>
                 <h1>Monitoring Confirmed</h1>
-                <p>All monitoring systems are active and running.</p>
+                <p>Camera and screen sharing are active and ready.</p>
                 <div className="tt-setup-list">
-                  <div><i className="fas fa-check" style={{ color: '#10b981' }} /> Fullscreen mode: Active</div>
                   <div><i className="fas fa-check" style={{ color: '#10b981' }} /> Camera monitoring: Active</div>
                   <div><i className="fas fa-check" style={{ color: '#10b981' }} /> Screen sharing: Active</div>
+                  <div><i className="fas fa-expand" style={{ color: '#006769' }} /> Fullscreen: Will enter on begin</div>
                 </div>
-                <p style={{ marginTop: '20px', fontWeight: 'bold' }}>Click &quot;Begin Test&quot; to start the timer and begin answering questions.</p>
+                <p style={{ marginTop: '20px', fontWeight: 'bold' }}>Click &quot;Begin Test&quot; to enter fullscreen mode and start the test timer.</p>
                 <div className="tt-modal-actions">
-                  <button type="button" className="tt-secondary" onClick={() => { setIsMonitoringReady(false); stopMonitoring(); }} disabled={false}>Cancel & Redo Setup</button>
-                  <button type="button" className="tt-primary" onClick={beginTest} disabled={false}>Begin Test</button>
+                  <button type="button" className="tt-secondary" onClick={() => { setIsMonitoringReady(false); stopMonitoring(); }} disabled={isInitializing}>Cancel & Redo Setup</button>
+                  <button type="button" className="tt-primary" onClick={async () => {
+                    isInitializingRef.current = true;
+                    setIsInitializing(true);
+                    try {
+                      await proceedToStartAttempt();
+                    } finally {
+                      isInitializingRef.current = false;
+                      setIsInitializing(false);
+                    }
+                  }} disabled={isInitializing}>
+                    {isInitializing ? 'Entering Fullscreen...' : 'Begin Test'}
+                  </button>
                 </div>
               </>
             )}
@@ -1641,13 +1722,25 @@ export function TakeTestContent() {
               <>
                 <h2>Fullscreen required</h2>
                 <p>You left fullscreen mode. Return to fullscreen to continue the test.</p>
-                <button type="button" className="tt-primary" onClick={resumeFullscreen}>Return to fullscreen</button>
+                <button type="button" className="tt-primary" onClick={resumeFullscreen} disabled={isInitializing}>
+                  {isInitializing ? 'Returning...' : 'Return to fullscreen'}
+                </button>
               </>
-            ) : (
+            ) : monitoringRecoveryStep === 'monitoring' ? (
               <>
                 <h2>Monitoring required</h2>
                 <p>To continue, restore your camera and share your entire screen.</p>
-                <button type="button" className="tt-primary" onClick={resumeMonitoring}>Restore monitoring</button>
+                <button type="button" className="tt-primary" onClick={resumeMonitoring} disabled={isInitializing}>
+                  {isInitializing ? 'Restoring...' : 'Restore monitoring'}
+                </button>
+              </>
+            ) : (
+              <>
+                <h2>Monitoring restored</h2>
+                <p>Camera, screen sharing, and fullscreen are active again.</p>
+                <button type="button" className="tt-primary" onClick={resumeFullscreen} disabled={isInitializing}>
+                  {isInitializing ? 'Resuming...' : 'Resume test'}
+                </button>
               </>
             )}
           </div>
