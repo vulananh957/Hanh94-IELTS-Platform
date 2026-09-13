@@ -38,6 +38,7 @@ import {
   clearPendingHardLock,
   getPendingHardLock,
   hardLockAttempt,
+  fetchAccessibleTest,
   rememberPendingHardLock,
 } from '@/services/test-access';
 import { invalidateStudentCache } from '@/services/student-dashboard';
@@ -782,7 +783,7 @@ export function TakeTestContent() {
           const result = await hardLockAttempt(pending);
           clearPendingHardLock(testId, user.uid);
           if (!result.locked) {
-            const data = await callFunction<TestData>(`/getTest?id=${encodeURIComponent(testId)}`, 'GET');
+            const data = await fetchAccessibleTest<TestData>(testId);
             if (active) applyLoadedTest(data);
           }
         } catch (err) {
@@ -794,7 +795,7 @@ export function TakeTestContent() {
       }
 
       try {
-        const data = await callFunction<TestData>(`/getTest?id=${encodeURIComponent(testId)}`, 'GET');
+        const data = await fetchAccessibleTest<TestData>(testId);
         if (!active) return;
         applyLoadedTest(data);
       } catch (err) {
