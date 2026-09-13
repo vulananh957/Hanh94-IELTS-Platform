@@ -300,6 +300,17 @@ async function revokeTestMaterialTokens(testId: string): Promise<boolean> {
   return outcomes.every(Boolean);
 }
 
+// New uploads may still receive a Firebase download token from legacy upload
+// clients. Remove it immediately so test material can only be fetched through
+// the access-checked material endpoint.
+export const removeNewTestMaterialDownloadToken = region.storage.object().onFinalize(async (object) => {
+  const path = text(object.name);
+  if (!path.startsWith('tests/') || !object.bucket) return;
+  await storage.bucket(object.bucket).file(path).setMetadata({
+    metadata: { firebaseStorageDownloadTokens: '' },
+  });
+});
+
 function onHttp(handler: (req: Request, res: Response, auth: AuthContext) => Promise<void>) {
   return region.https.onRequest(async (req, res) => {
     if (setCors(req, res)) return;
