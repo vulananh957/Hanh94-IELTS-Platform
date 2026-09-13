@@ -125,6 +125,15 @@ function isProtectedMaterialUrl(value: string): boolean {
   }
 }
 
+function materialTypeFragment(url: string): string {
+  try {
+    const path = new URL(url).searchParams.get('path');
+    return path ? `#${encodeURIComponent(path)}` : '';
+  } catch {
+    return '';
+  }
+}
+
 async function fetchProtectedMaterial(url: string, accessToken: string): Promise<string> {
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -132,7 +141,10 @@ async function fetchProtectedMaterial(url: string, accessToken: string): Promise
   });
   if (response.status === 423) throw new TestAccessLockedError('Test Locked');
   if (!response.ok) throw new TestAccessRequestError(`Unable to load test material (${response.status}).`, response.status);
-  return URL.createObjectURL(await response.blob());
+  // The opaque blob URL has no filename. Preserve the original path as a
+  // fragment so existing audio/PDF/image renderers retain the media type;
+  // fragments are never sent back to Storage or the material endpoint.
+  return `${URL.createObjectURL(await response.blob())}${materialTypeFragment(url)}`;
 }
 
 async function hydrateProtectedMaterial(value: unknown, accessToken: string): Promise<unknown> {

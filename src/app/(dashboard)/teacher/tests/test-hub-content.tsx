@@ -187,7 +187,6 @@ function buildPreviewSections(data: PreviewData, skill: TestSkill): PreviewSecti
 function isLikelyUrl(value: string): boolean {
   const text = value.trim().toLowerCase();
   return (
-    text.startsWith('blob:') ||
     text.startsWith('http://') ||
     text.startsWith('https://') ||
     text.startsWith('gs://') ||
@@ -197,23 +196,19 @@ function isLikelyUrl(value: string): boolean {
   );
 }
 
-function isBlobUrl(value: string): boolean {
-  return value.trim().toLowerCase().startsWith('blob:');
-}
-
 function isAudioUrl(value: string): boolean {
   const text = value.trim().toLowerCase();
-  return isBlobUrl(text) || /(\.(mp3|wav|m4a|ogg|aac|webm))(\?|#|$)/.test(text) || (isLikelyUrl(text) && text.includes('audio'));
+  return /(\.(mp3|wav|m4a|ogg|aac|webm))(\?|#|$)/.test(text) || (isLikelyUrl(text) && text.includes('audio'));
 }
 
 function isPdfUrl(value: string): boolean {
   const text = value.trim().toLowerCase();
-  return isBlobUrl(text) || /\.pdf(\?|#|$)/.test(text) || (isLikelyUrl(text) && text.includes('pdf'));
+  return /\.pdf(\?|#|$)/.test(text) || (isLikelyUrl(text) && text.includes('pdf'));
 }
 
 function isImageUrl(value: string): boolean {
   const text = value.trim().toLowerCase();
-  return isBlobUrl(text) || /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/.test(text) || (isLikelyUrl(text) && text.includes('image'));
+  return /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/.test(text) || (isLikelyUrl(text) && text.includes('image'));
 }
 
 function collectRawStrings(value: unknown, output: string[], depth = 0): void {
