@@ -43,6 +43,10 @@ export type PendingHardLock = {
   reason: 'screen_sharing_stopped';
 };
 
+export type FetchAccessibleTestOptions = {
+  hydrateMaterials?: boolean;
+};
+
 export class TestAccessLockedError extends Error {
   readonly status = 423;
 
@@ -162,6 +166,14 @@ async function hydrateProtectedMaterial(value: unknown, accessToken: string): Pr
   return value;
 }
 
+export async function hydrateProtectedMaterialUrls(urls: string[]): Promise<string[]> {
+  if (!urls.some(isProtectedMaterialUrl)) return urls;
+  const accessToken = await token();
+  return Promise.all(urls.map((url) => (
+    isProtectedMaterialUrl(url) ? fetchProtectedMaterial(url, accessToken) : url
+  )));
+}
+
 export async function fetchAssignedTestSummaries(): Promise<AssignedTestSummary[]> {
   const result = await requestTestAccess<{ tests: AssignedTestSummary[] }>({
     path: '/listAssignedTests',
@@ -171,13 +183,17 @@ export async function fetchAssignedTestSummaries(): Promise<AssignedTestSummary[
   return result.tests || [];
 }
 
-export async function fetchAccessibleTest<T extends Record<string, unknown> = Record<string, unknown>>(testId: string): Promise<T> {
+export async function fetchAccessibleTest<T extends Record<string, unknown> = Record<string, unknown>>(
+  testId: string,
+  options: FetchAccessibleTestOptions = {},
+): Promise<T> {
   const accessToken = await token();
   const test = await requestTestAccess<T>({
     path: `/getTest?id=${encodeURIComponent(testId)}`,
     method: 'GET',
     token: accessToken,
   });
+  if (options.hydrateMaterials === false) return test;
   return hydrateProtectedMaterial(test, accessToken) as Promise<T>;
 }
 

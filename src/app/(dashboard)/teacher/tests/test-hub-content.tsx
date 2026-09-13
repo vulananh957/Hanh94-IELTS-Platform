@@ -22,6 +22,7 @@ import {
 } from '@/services/test-hub';
 import {
   fetchAccessibleTest,
+  hydrateProtectedMaterialUrls,
   listLockedTestAccess,
   unlockTestAccess,
   type TestAccessLock,
@@ -399,6 +400,7 @@ export function TestHubContent() {
   const [previewData, setPreviewData] = useState<PreviewData>(null);
   const [previewMediaResolved, setPreviewMediaResolved] = useState<{ writingTask1: string[]; writingTask2: string[]; reading: string[]; listening: string[]; passageText: string } | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [isPreviewMediaLoading, setIsPreviewMediaLoading] = useState(false);
   const [studentsTest, setStudentsTest] = useState<TestHubTest | null>(null);
   const [studentsStatusRows, setStudentsStatusRows] = useState<StudentsStatusRow[]>([]);
   const [studentsStatusLoading, setStudentsStatusLoading] = useState(false);
@@ -600,6 +602,7 @@ export function TestHubContent() {
     if (!previewTest) {
       setPreviewData(null);
       setIsPreviewLoading(false);
+      setIsPreviewMediaLoading(false);
       return;
     }
 
@@ -607,8 +610,10 @@ export function TestHubContent() {
 
     const loadPreviewData = async () => {
       setIsPreviewLoading(true);
+      setPreviewMediaResolved(null);
+      setIsPreviewMediaLoading(true);
       try {
-        const testData = await fetchAccessibleTest(previewTest.id);
+        const testData = await fetchAccessibleTest(previewTest.id, { hydrateMaterials: false });
         if (cancelled) return;
         setPreviewData(testData);
       } catch {
@@ -629,17 +634,20 @@ export function TestHubContent() {
   useEffect(() => {
     if (!previewData) {
       setPreviewMediaResolved(null);
+      setIsPreviewMediaLoading(false);
       return;
     }
 
     let cancelled = false;
+    setIsPreviewMediaLoading(true);
 
     const resolveMedia = async () => {
       try {
         const rawMedia = getPreviewMedia(previewData);
 
-        // Helper to resolve media URLs (passthrough for now)
-        const resolveMaterialList = async (items: unknown): Promise<string[]> => (Array.isArray(items) ? items : []) as string[];
+        const resolveMaterialList = (items: unknown): Promise<string[]> => hydrateProtectedMaterialUrls(
+          (Array.isArray(items) ? items : []).filter((item): item is string => typeof item === 'string'),
+        );
 
         const [writingTask1, writingTask2, reading, listening] = await Promise.all([
           resolveMaterialList(rawMedia.writingTask1),
@@ -656,10 +664,14 @@ export function TestHubContent() {
             listening,
             passageText: rawMedia.passageText,
           });
+          setIsPreviewMediaLoading(false);
         }
       } catch (err) {
         console.warn('[PREVIEW] Failed to resolve media URLs:', err);
-        if (!cancelled) setPreviewMediaResolved(null);
+        if (!cancelled) {
+          setPreviewMediaResolved(null);
+          setIsPreviewMediaLoading(false);
+        }
       }
     };
 
@@ -1099,7 +1111,17 @@ export function TestHubContent() {
     window.setTimeout(() => setUnlockToast(null), 4000);
   };
 
-  const previewMedia = useMemo(() => previewMediaResolved || getPreviewMedia(previewData), [previewMediaResolved, previewData]);
+  const previewMedia = useMemo(() => {
+    if (previewMediaResolved) return previewMediaResolved;
+    const rawMedia = getPreviewMedia(previewData);
+    return {
+      ...rawMedia,
+      writingTask1: [],
+      writingTask2: [],
+      reading: [],
+      listening: [],
+    };
+  }, [previewMediaResolved, previewData]);
 
   const previewSections = useMemo(
     () => buildPreviewSections(previewData, previewTest?.skill ?? 'unknown'),
@@ -1301,7 +1323,7 @@ export function TestHubContent() {
                     {[{ title: 'Task 1', urls: media.writingTask1 }, { title: 'Task 2', urls: media.writingTask2 }].map((task) => (
                       <div className="preview-resource-card" key={task.title}>
                         <div className="preview-resource-card-header"><strong>{task.title}</strong></div>
-                        {task.urls.length > 0 ? task.urls.map((url) => (
+                        {isPreviewMediaLoading ? <p className="preview-empty-inline">Loading protected media...</p> : task.urls.length > 0 ? task.urls.map((url) => (
                           <div className="preview-resource-frame preview-resource-frame--image" key={url}>
                             <img src={url} alt={task.title} />
                           </div>
@@ -1314,7 +1336,7 @@ export function TestHubContent() {
                 {previewTest.skill === 'reading' ? (
                   <div className="preview-resource-card">
                     <div className="preview-resource-card-header"><strong>Reading Source</strong></div>
-                    {media.reading.filter((url) => url.toLowerCase().includes('.pdf')).length > 0 ? (
+                    {isPreviewMediaLoading ? <p className="preview-empty-inline">Loading protected media...</p> : media.reading.filter((url) => url.toLowerCase().includes('.pdf')).length > 0 ? (
                       media.reading
                         .filter((url) => url.toLowerCase().includes('.pdf'))
                         .map((url) => (
@@ -1332,7 +1354,7 @@ export function TestHubContent() {
 
                 {previewTest.skill === 'listening' ? (
                   <>
-                    {media.listening.length > 0 ? media.listening.map((url, index) => (
+                    {isPreviewMediaLoading ? <p className="preview-empty-inline">Loading protected media...</p> : media.listening.length > 0 ? media.listening.map((url, index) => (
                       <div className="preview-resource-card" key={url}>
                         <div className="preview-resource-card-header"><strong>Part {index + 1}</strong></div>
                         <audio controls style={{ width: '100%' }}>

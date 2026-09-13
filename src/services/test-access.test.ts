@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { getAuthMock } = vi.hoisted(() => ({ getAuthMock: vi.fn() }));
+
+vi.mock('firebase/auth', () => ({ getAuth: getAuthMock }));
+vi.mock('./firebase', () => ({ firebaseApp: {} }));
+
 import {
   TestAccessLockedError,
   clearPendingHardLock,
+  fetchAccessibleTest,
   getPendingHardLock,
   rememberPendingHardLock,
   requestTestAccess,
@@ -11,6 +18,7 @@ describe('test access client', () => {
   beforeEach(() => {
     localStorage.clear();
     vi.restoreAllMocks();
+    getAuthMock.mockReset();
   });
 
   it('surfaces backend lock responses as a stable domain error', async () => {
@@ -39,5 +47,29 @@ describe('test access client', () => {
 
     clearPendingHardLock('test-1', 'student-1');
     expect(getPendingHardLock('test-1', 'student-1')).toBeNull();
+  });
+
+  it('can return protected preview metadata without waiting for every material download', async () => {
+    const getIdToken = vi.fn().mockResolvedValue('token');
+    getAuthMock.mockReturnValue({
+      currentUser: { getIdToken },
+    });
+
+    const delayedMaterial = new Promise<Response>(() => undefined);
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'test-1',
+        files: {
+          listeningPart1: 'https://example.test/getTestMaterial?session=session-1&path=tests%2Ftest-1%2Faudio.mp3',
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockReturnValueOnce(delayedMaterial));
+
+    await expect(fetchAccessibleTest('test-1', { hydrateMaterials: false })).resolves.toMatchObject({
+      files: {
+        listeningPart1: expect.stringContaining('/getTestMaterial'),
+      },
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
