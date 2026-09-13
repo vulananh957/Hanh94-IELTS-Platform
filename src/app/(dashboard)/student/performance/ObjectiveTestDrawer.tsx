@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
+import { fetchAccessibleTest } from '@/services/test-access';
 import { calculateObjectiveScore } from '@/lib/score-calculator';
 import { calculateIELTSBand, matchAnswer } from '@/app/(dashboard)/student/take-test/take-test-utils';
 import type { ObjectiveTestResult } from '@/services/student-objective-tests';
@@ -408,12 +409,11 @@ export function ObjectiveTestDrawer({
       const db = getFirestore(firebaseApp);
 
       // 1) Fetch both docs in parallel
-      const [trSnap, testSnap] = await Promise.all([
+      const [trSnap, testData] = await Promise.all([
         getDoc(doc(db, 'testResults', test.id)),
-        getDoc(doc(db, 'tests', test.testId)),
+        fetchAccessibleTest(test.testId),
       ]);
       const trData = trSnap.exists() ? (trSnap.data() as Record<string, unknown>) : null;
-      const testData = testSnap.exists() ? (testSnap.data() as Record<string, unknown>) : null;
 
       if (!trData && !testData) {
         setError('Test data not found. The test may have been deleted.');

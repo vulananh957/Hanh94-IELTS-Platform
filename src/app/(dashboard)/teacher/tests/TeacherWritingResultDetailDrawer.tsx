@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
+import { fetchAccessibleTest } from '@/services/test-access';
 
 interface TeacherWritingResultDetailDrawerProps {
   testResultId: string;
@@ -162,10 +163,7 @@ export function TeacherWritingResultDetailDrawer({
       // Step 2: Fetch the test document to get prompt/file URLs.
       let testData: Record<string, unknown> | null = null;
       try {
-        const testSnap = await getDoc(doc(db, 'tests', resolvedTestId));
-        if (testSnap.exists()) {
-          testData = testSnap.data() as Record<string, unknown>;
-        }
+        testData = await fetchAccessibleTest(resolvedTestId);
       } catch (err) {
         console.warn('[TeacherWritingResultDetailDrawer] Could not fetch test doc:', err);
       }

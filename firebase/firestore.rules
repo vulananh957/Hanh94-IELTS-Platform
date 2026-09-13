@@ -72,16 +72,10 @@ service cloud.firestore {
     function isAssignedTest(testData) {
       return isStudent() && (
         !('classAssignment' in testData) ||
-        !('distribution' in testData.classAssignment) ||
-        testData.classAssignment.distribution == 'all' ||
-        (
-          testData.classAssignment.distribution == 'specific' &&
-          ('selectedClasses' in testData.classAssignment) &&
-          (
-            studentClassId() in testData.classAssignment.selectedClasses ||
-            studentClassCode() in testData.classAssignment.selectedClasses
-          )
-        )
+        !('selectedClasses' in testData.classAssignment) ||
+        testData.classAssignment.selectedClasses.size() == 0 ||
+        studentClassId() in testData.classAssignment.selectedClasses ||
+        studentClassCode() in testData.classAssignment.selectedClasses
       );
     }
 
@@ -107,11 +101,9 @@ service cloud.firestore {
     }
 
     match /tests/{testId} {
-      // Students may fetch one assigned, unlocked Test. Collection scans are
-      // intentionally denied because each Test document contains answer data.
-      allow get: if isTeacherOrCreator() || (
-        isAssignedTest(resource.data) && !hasActiveTestLock(testId)
-      );
+      // Test material is served by getTest, which verifies assignment and lock
+      // status and replaces storage URLs with revocable access sessions.
+      allow get: if isTeacherOrCreator();
       allow list: if isTeacherOrCreator();
       allow create: if isTeacherOrCreator();
 
@@ -144,6 +136,11 @@ service cloud.firestore {
       allow create, update: if isTeacherOrCreator();
 
       allow delete: if isTeacherOrCreator();
+
+      match /violations/{violationId} {
+        allow read: if isTeacherOrCreator();
+        allow write: if false;
+      }
     }
 
     match /testResults/{resultId} {
@@ -165,7 +162,9 @@ service cloud.firestore {
         isTeacherOrCreator()
       );
 
-      allow create: if isStudent() && request.resource.data.studentUid == request.auth.uid;
+      // Student submissions are created through submitAttempt so lock and
+      // ownership checks cannot be bypassed through this legacy collection.
+      allow create: if isTeacherOrCreator();
 
       allow update: if isTeacherOrCreator();
 

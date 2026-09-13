@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { getAuth, onAuthStateChanged, type User } from 'firebase/auth';
 import { ref, uploadBytes } from 'firebase/storage';
 import { firebaseApp, firebaseStorage } from '@/services/firebase';
-import { fetchStudentClassDisplayName } from '@/services/student-profile';
 import {
   calculateIELTSBand,
   countTotalQuestionsFromMetadata,
@@ -34,6 +33,7 @@ import {
   shouldHardLockMonitoringViolation,
 } from './monitoring-recovery';
 import {
+  callTestAccess as callFunction,
   TestAccessLockedError,
   clearPendingHardLock,
   getPendingHardLock,
@@ -117,34 +117,7 @@ type Notification = {
   actionId?: string;
 };
 
-const PROJECT_ID = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'hanh94esl-71776';
-const FUNCTIONS_BASE = `https://us-central1-${PROJECT_ID}.cloudfunctions.net`;
 const MAX_WARNINGS = 3;
-
-
-
-async function callFunction<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
-  const auth = getAuth(firebaseApp);
-  const token = await auth.currentUser?.getIdToken();
-  if (!token) throw new Error('Missing auth token. Please sign in again.');
-
-  const response = await fetch(`${FUNCTIONS_BASE}${path}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    if (response.status === 423) throw new TestAccessLockedError('Test Locked');
-    throw new Error(`HTTP ${response.status}: ${text}`);
-  }
-
-  return response.json() as Promise<T>;
-}
 
 function isImageUrl(url: string | undefined): boolean {
   if (!url) return false;
@@ -320,6 +293,12 @@ export function TakeTestContent() {
     }, 500);
   }, [testId]);
 
+  const setWritingAnswer = useCallback((key: 'writingTask1' | 'writingTask2', value: string) => {
+    if (hardLockRef.current || isPausedRef.current) return;
+    updateAnswers((current) => ({ ...current, [key]: value }));
+    scheduleAutosave();
+  }, [scheduleAutosave, updateAnswers]);
+
   // ── Monitoring evidence ──────────────────────────────────────────
   // Evidence is always an Entire-screen frame. Webcam video is required for
   // monitoring, but it is never used as evidence.
@@ -403,16 +382,25 @@ export function TakeTestContent() {
   // in-memory frame every 15 seconds for a meaningful last-live capture.
   const startHeartbeat = useCallback(() => {
     if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+    const renewMonitoringLease = () => {
+      const attemptId = attemptIdRef.current;
+      const [screenTrack] = screenStreamRef.current?.getVideoTracks() || [];
+      if (!isStartedRef.current || !attemptId || !testId || !isLiveMonitoringTrack(screenTrack)) return;
+      void callFunction('/monitorAttempt', 'POST', { testId, attemptId })
+        .catch((error) => console.warn('[take-test monitoring lease]', error));
+    };
     void refreshLastLiveScreenFrame();
+    renewMonitoringLease();
     heartbeatIntervalRef.current = setInterval(() => {
       if (!isStartedRef.current) return;
+      renewMonitoringLease();
       void refreshLastLiveScreenFrame();
       const now = Date.now();
       if (now - lastHeartbeatRef.current < 60000) return;
       lastHeartbeatRef.current = now;
       void captureAndUploadEvidence('heartbeat');
     }, 5000);
-  }, [captureAndUploadEvidence, refreshLastLiveScreenFrame]);
+  }, [captureAndUploadEvidence, refreshLastLiveScreenFrame, testId]);
 
   const stopHeartbeat = useCallback(() => {
     if (heartbeatIntervalRef.current) {
@@ -831,20 +819,33 @@ export function TakeTestContent() {
   }, [clearListeningGapTimers, testId, user]);
 
   useEffect(() => {
-    if (!user || !testId) return;
-    const retryPendingLock = () => {
+    if (!isHardLocked || !user || !testId) return;
+    let cancelled = false;
+    let retryCount = 0;
+    let retryTimer: number | null = null;
+
+    const retryPendingLock = async () => {
       const pending = getPendingHardLock(testId, user.uid);
-      if (!pending) return;
-      void hardLockAttempt(pending)
-        .then((result) => {
-          clearPendingHardLock(testId, user.uid);
-          if (!result.locked) router.replace('/student/assignments');
-        })
-        .catch((err) => console.warn('[take-test hard-lock] online retry failed', err));
+      if (!pending || cancelled) return;
+      try {
+        const result = await hardLockAttempt(pending);
+        if (cancelled) return;
+        clearPendingHardLock(testId, user.uid);
+        if (!result.locked) router.replace('/student/assignments');
+      } catch (err) {
+        retryCount += 1;
+        const delay = Math.min(30_000, 500 * 2 ** Math.min(retryCount, 6));
+        console.warn(`[take-test hard-lock] retry ${retryCount} in ${delay}ms`, err);
+        retryTimer = window.setTimeout(() => { void retryPendingLock(); }, delay);
+      }
     };
-    window.addEventListener('online', retryPendingLock);
-    return () => window.removeEventListener('online', retryPendingLock);
-  }, [router, testId, user]);
+
+    void retryPendingLock();
+    return () => {
+      cancelled = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+    };
+  }, [isHardLocked, router, testId, user]);
 
   useEffect(() => {
     if (cameraVideoRef.current && cameraStream) {
@@ -1122,9 +1123,7 @@ export function TakeTestContent() {
 
     // The backend owns Attempt creation. The returned context ties every
     // evidence capture to that immutable Attempt and its readable class name.
-    const className = startContext.className
-      || (await fetchStudentClassDisplayName(user.email || ''))
-      || 'Chưa xếp lớp';
+    const className = startContext.className || 'Chưa xếp lớp';
     const evidenceAttempt: EvidenceAttemptPathInput = {
       testName: test.name || 'Untitled test',
       testId: test.id,
@@ -1898,10 +1897,8 @@ export function TakeTestContent() {
                 <p>Write at least 150 words.</p>
                 <textarea
                   value={answers.writingTask1 || ''}
-                  onChange={(event) => {
-                    updateAnswers((current) => ({ ...current, writingTask1: event.target.value }));
-                    scheduleAutosave();
-                  }}
+                  disabled={isHardLocked || isPaused}
+                  onChange={(event) => setWritingAnswer('writingTask1', event.target.value)}
                   placeholder="Write your Task 1 response here..."
                 />
                 <span>Word count: {task1Words} / 150 minimum</span>
@@ -1911,10 +1908,8 @@ export function TakeTestContent() {
                 <p>Write at least 250 words.</p>
                 <textarea
                   value={answers.writingTask2 || ''}
-                  onChange={(event) => {
-                    updateAnswers((current) => ({ ...current, writingTask2: event.target.value }));
-                    scheduleAutosave();
-                  }}
+                  disabled={isHardLocked || isPaused}
+                  onChange={(event) => setWritingAnswer('writingTask2', event.target.value)}
                   placeholder="Write your Task 2 response here..."
                 />
                 <span>Word count: {task2Words} / 250 minimum</span>

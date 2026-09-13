@@ -1,9 +1,8 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { getFirestore, doc, getDoc } from 'firebase/firestore';
-import { firebaseApp } from '@/services/firebase';
 import type { WritingResult } from '@/services/student-writing-results';
+import { fetchAccessibleTest } from '@/services/test-access';
 
 interface DrawerProps {
   isOpen: boolean;
@@ -70,15 +69,7 @@ export function WritingResultDrawer({ isOpen, onClose, result, onPrev, onNext, h
       return;
     }
 
-    // If result already has a promptFileUrl, cache and return
-    if (result.promptFileUrl) {
-      fetchCacheRef.current[cacheKey] = result.promptFileUrl;
-      setFetchedPromptUrl(result.promptFileUrl);
-      return;
-    }
-
     let isMounted = true;
-    const db = getFirestore(firebaseApp);
     
     // Type guard: cast result as non-null since we've checked above
     const res = result as WritingResult;
@@ -151,16 +142,14 @@ export function WritingResultDrawer({ isOpen, onClose, result, onPrev, onNext, h
       try {
         // Fetch by testId (document ID)
         if (res.testId) {
-          const snap = await getDoc(doc(db, 'tests', res.testId));
-          if (snap.exists()) {
-            const url = extractPromptFromTestData(snap.data() as Record<string, unknown>);
-            const resolved = url;
-            if (isMounted) {
-              fetchCacheRef.current[cacheKey] = resolved;
-              setFetchedPromptUrl(resolved);
-            }
-            return;
+          const testData = await fetchAccessibleTest(res.testId);
+          const url = extractPromptFromTestData(testData);
+          const resolved = url;
+          if (isMounted) {
+            fetchCacheRef.current[cacheKey] = resolved;
+            setFetchedPromptUrl(resolved);
           }
+          return;
         }
       } catch (err) {
         console.warn('[PROMPT] Error fetching:', err);

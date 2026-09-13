@@ -3,12 +3,12 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
-import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
 import { clearAuthState } from '@/services/auth';
 import { fetchStudentWritingResults, type WritingResult } from '@/services/student-writing-results';
 import { fetchStudentObjectiveTests, type ObjectiveTestResult } from '@/services/student-objective-tests';
 import { fetchStudentClassName } from '@/services/student-profile';
+import { fetchAccessibleTest } from '@/services/test-access';
 import { countTotalQuestionsFromMetadata, calculateIELTSBand } from '../take-test/take-test-utils';
 import { WritingResultCard } from './WritingResultCard';
 import { WritingResultDrawer } from './WritingResultDrawer';
@@ -131,8 +131,8 @@ export function PerformanceContent() {
     if (objData.status === 'fulfilled') {
       setObjTests(objData.value);
 
-      // Batch-fetch all test documents in parallel chunks (Firestore 'in' limit = 10)
-      const db = getFirestore(firebaseApp);
+      // Fetch through the access-checked backend rather than exposing Test docs
+      // through Firestore to a locked student.
       const results = objData.value;
       const testIdChunks: string[][] = [];
       for (let i = 0; i < results.length; i += 10) {
@@ -141,7 +141,7 @@ export function PerformanceContent() {
 
       const fetchedMeta = await Promise.allSettled(
         testIdChunks.map((chunk) =>
-          Promise.all(chunk.map((id) => getDoc(doc(db, 'tests', id))))
+          Promise.all(chunk.map((id) => fetchAccessibleTest(id)))
         ),
       );
 
@@ -149,8 +149,9 @@ export function PerformanceContent() {
       const testMetaMap = new Map<string, Record<string, unknown>>();
       fetchedMeta.forEach((chunkResult) => {
         if (chunkResult.status !== 'fulfilled') return;
-        chunkResult.value.forEach((snap) => {
-          if (snap.exists()) testMetaMap.set(snap.id, snap.data() as Record<string, unknown>);
+        chunkResult.value.forEach((testData) => {
+          const testId = String(testData.id || '');
+          if (testId) testMetaMap.set(testId, testData as Record<string, unknown>);
         });
       });
 

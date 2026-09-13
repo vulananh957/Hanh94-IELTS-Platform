@@ -21,6 +21,7 @@ import {
   type TestSkill,
 } from '@/services/test-hub';
 import {
+  fetchAccessibleTest,
   listLockedTestAccess,
   unlockTestAccess,
   type TestAccessLock,
@@ -607,9 +608,9 @@ export function TestHubContent() {
     const loadPreviewData = async () => {
       setIsPreviewLoading(true);
       try {
-        const snapshot = await getDoc(doc(db, 'tests', previewTest.id));
+        const testData = await fetchAccessibleTest(previewTest.id);
         if (cancelled) return;
-        setPreviewData(snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as Record<string, unknown>) : null);
+        setPreviewData(testData);
       } catch {
         if (!cancelled) setPreviewData(null);
       } finally {
@@ -1014,6 +1015,33 @@ export function TestHubContent() {
             accessLock: lockByEmail.get(email),
           };
         });
+
+        const visibleLockIds = new Set(
+          rows.map((row) => row.accessLock?.id).filter((id): id is string => Boolean(id)),
+        );
+        accessLocks
+          .filter((lock) => lock.status === 'locked' && !visibleLockIds.has(lock.id))
+          .forEach((lock) => {
+            const knownStudent = students.find((student) => (
+              student.email.trim().toLowerCase() === String(lock.studentEmail || '').trim().toLowerCase()
+            ));
+            rows.push({
+              student: knownStudent || {
+                id: lock.studentUid,
+                email: lock.studentEmail || '',
+                name: lock.studentName || 'Student',
+                displayName: lock.studentName || 'Student',
+                classId: lock.classId,
+              },
+              displayName: lock.studentName || knownStudent?.displayName || knownStudent?.name || 'Student',
+              className: lock.className || 'Unknown Class',
+              latestScore: null,
+              completedAtMs: null,
+              violationCount: 1,
+              hasAttempted: true,
+              accessLock: lock,
+            });
+          });
 
         rows.sort((a, b) => {
           const classCmp = a.className.localeCompare(b.className, 'en', { sensitivity: 'base' });

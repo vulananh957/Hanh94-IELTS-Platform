@@ -39,4 +39,12 @@ describe('test access policy', () => {
       { classId: 'class-doc-id', classCode: 'IELTS-A' },
     )).toBe(false);
   });
+
+  it('treats any non-empty selectedClasses list as the access boundary for legacy shapes', () => {
+    const student = { classId: 'class-a', classCode: 'A' };
+    expect(isAssignedToTest({ selectedClasses: ['class-a'] }, student)).toBe(true);
+    expect(isAssignedToTest({ distribution: 'all', selectedClasses: ['class-a'] }, student)).toBe(true);
+    expect(isAssignedToTest({ selectedClasses: ['class-b'] }, student)).toBe(false);
+    expect(isAssignedToTest({ distribution: 'all', selectedClasses: ['class-b'] }, student)).toBe(false);
+  });
 });

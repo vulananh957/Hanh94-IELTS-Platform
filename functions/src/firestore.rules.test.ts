@@ -42,6 +42,14 @@ describeWithEmulator('student test access rules', () => {
           name: 'Other Test', answerKey: { 1: 'secret' },
           classAssignment: { distribution: 'specific', selectedClasses: ['class-b'] },
         }),
+        setDoc(doc(db, 'tests', 'test-c'), {
+          name: 'Legacy restricted Test', answerKey: { 1: 'secret' },
+          classAssignment: { selectedClasses: ['class-b'] },
+        }),
+        setDoc(doc(db, 'tests', 'test-d'), {
+          name: 'Mixed restricted Test', answerKey: { 1: 'secret' },
+          classAssignment: { distribution: 'all', selectedClasses: ['class-b'] },
+        }),
       ]);
     });
   });
@@ -49,13 +57,15 @@ describeWithEmulator('student test access rules', () => {
   afterAll(async () => {
     await testEnv.cleanup();
   });
-  it('allows one assigned unlocked test but denies unassigned tests and collection scans', async () => {
+  it('denies every student direct Test document read and collection scan', async () => {
     const db = testEnv.authenticatedContext('student-1', {
       email: 'student@example.com', role: 'student',
     }).firestore();
 
-    await assertSucceeds(getDoc(doc(db, 'tests', 'test-a')));
+    await assertFails(getDoc(doc(db, 'tests', 'test-a')));
     await assertFails(getDoc(doc(db, 'tests', 'test-b')));
+    await assertFails(getDoc(doc(db, 'tests', 'test-c')));
+    await assertFails(getDoc(doc(db, 'tests', 'test-d')));
     await assertFails(getDocs(collection(db, 'tests')));
   });
 
@@ -76,6 +86,9 @@ describeWithEmulator('student test access rules', () => {
     }));
     await assertFails(setDoc(doc(db, 'testResults', 'attempt-1'), {
       testId: 'test-a', studentEmail: 'student@example.com', status: 'completed',
+    }));
+    await assertFails(setDoc(doc(db, 'writing', 'attempt-1'), {
+      testId: 'test-a', studentUid: 'student-1', status: 'pending',
     }));
     await assertFails(setDoc(doc(db, 'testAccessLocks', 'test-a--student-1'), {
       status: 'unlocked', studentUid: 'student-1', testId: 'test-a',

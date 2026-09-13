@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getFirestore, doc, getDoc } from 'firebase/firestore';
-import { firebaseApp } from '@/services/firebase';
+import { fetchAccessibleTest } from '@/services/test-access';
 import { useUploadTestStore } from '../store/use-upload-test-store';
 import { EditTestWorkbench } from './edit-test-workbench';
 
@@ -26,18 +25,7 @@ export function EditTestPage({ testId }: EditTestPageProps) {
       setError(null);
 
       try {
-        const db = getFirestore(firebaseApp);
-        const snap = await getDoc(doc(db, 'tests', testId));
-
-        if (!snap.exists()) {
-          if (!cancelled) {
-            setError('Test not found. It may have been deleted.');
-            setLoading(false);
-          }
-          return;
-        }
-
-        const data = { id: snap.id, ...snap.data() };
+        const data = await fetchAccessibleTest<Record<string, unknown>>(testId);
         loadExistingTest(data);
 
         if (!cancelled) {

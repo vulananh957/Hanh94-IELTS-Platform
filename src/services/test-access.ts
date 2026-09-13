@@ -113,6 +113,43 @@ async function token(): Promise<string> {
   return currentUser.getIdToken();
 }
 
+export async function callTestAccess<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
+  return requestTestAccess<T>({ path, method, body, token: await token() });
+}
+
+function isProtectedMaterialUrl(value: string): boolean {
+  try {
+    return new URL(value).pathname.endsWith('/getTestMaterial');
+  } catch {
+    return false;
+  }
+}
+
+async function fetchProtectedMaterial(url: string, accessToken: string): Promise<string> {
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    cache: 'no-store',
+  });
+  if (response.status === 423) throw new TestAccessLockedError('Test Locked');
+  if (!response.ok) throw new TestAccessRequestError(`Unable to load test material (${response.status}).`, response.status);
+  return URL.createObjectURL(await response.blob());
+}
+
+async function hydrateProtectedMaterial(value: unknown, accessToken: string): Promise<unknown> {
+  if (typeof value === 'string') {
+    return isProtectedMaterialUrl(value) ? fetchProtectedMaterial(value, accessToken) : value;
+  }
+  if (Array.isArray(value)) return Promise.all(value.map((item) => hydrateProtectedMaterial(item, accessToken)));
+  if (value && typeof value === 'object') {
+    const entries = await Promise.all(Object.entries(value as Record<string, unknown>).map(async ([key, item]) => [
+      key,
+      await hydrateProtectedMaterial(item, accessToken),
+    ] as const));
+    return Object.fromEntries(entries);
+  }
+  return value;
+}
+
 export async function fetchAssignedTestSummaries(): Promise<AssignedTestSummary[]> {
   const result = await requestTestAccess<{ tests: AssignedTestSummary[] }>({
     path: '/listAssignedTests',
@@ -120,6 +157,16 @@ export async function fetchAssignedTestSummaries(): Promise<AssignedTestSummary[
     token: await token(),
   });
   return result.tests || [];
+}
+
+export async function fetchAccessibleTest<T extends Record<string, unknown> = Record<string, unknown>>(testId: string): Promise<T> {
+  const accessToken = await token();
+  const test = await requestTestAccess<T>({
+    path: `/getTest?id=${encodeURIComponent(testId)}`,
+    method: 'GET',
+    token: accessToken,
+  });
+  return hydrateProtectedMaterial(test, accessToken) as Promise<T>;
 }
 
 export async function fetchTestAccessState(testId: string): Promise<{ status: 'locked' | 'unlocked'; lock: TestAccessLock | null }> {

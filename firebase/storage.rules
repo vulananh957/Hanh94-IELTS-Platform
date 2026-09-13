@@ -1,10 +1,10 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    // Allow public read of test materials (PDF, audio)
-    // These are learning materials, safe to be public
+    // Test materials are delivered through the access-checked getTestMaterial
+    // Function. They must never be fetched directly from Storage by a student.
     match /tests/{allPaths=**} {
-      allow read: if true;
+      allow read: if false;
       allow write: if false;
     }
     

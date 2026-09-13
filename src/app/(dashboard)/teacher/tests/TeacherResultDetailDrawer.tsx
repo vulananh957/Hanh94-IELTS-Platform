@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
+import { fetchAccessibleTest } from '@/services/test-access';
 import { matchAnswer } from '@/app/(dashboard)/student/take-test/take-test-utils';
 
 /* ── types ─────────────────────────────────────────────────────── */
@@ -412,8 +413,7 @@ export function TeacherResultDetailDrawer({
       }
 
       // 2) Fetch the test doc
-      const testSnap = await getDoc(doc(db, 'tests', actualTestId));
-      const testData = testSnap.exists() ? (testSnap.data() as Record<string, unknown>) : null;
+      const testData = await fetchAccessibleTest(actualTestId);
 
       if (!testData) {
         setError('Test data not found. The test may have been deleted.');

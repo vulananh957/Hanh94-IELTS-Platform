@@ -2,7 +2,9 @@ import * as functions from 'firebase-functions/v1';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { DecodedIdToken, getAuth } from 'firebase-admin/auth';
 import { FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore';
+import { getStorage } from 'firebase-admin/storage';
 import type { Request, Response } from 'express';
+import { randomUUID } from 'node:crypto';
 import {
   canTransitionAttemptToLocked,
   getAccessLockDocumentId,
@@ -12,7 +14,10 @@ import {
 if (getApps().length === 0) initializeApp();
 
 const db = getFirestore();
+const storage = getStorage();
 const region = functions.region('us-central1');
+const PUBLIC_FUNCTIONS_BASE = `https://us-central1-${process.env.GCLOUD_PROJECT || 'hanh94esl-71776'}.cloudfunctions.net`;
+const MONITORING_LEASE_MS = 20_000;
 
 type AuthContext = {
   decoded: DecodedIdToken;
@@ -141,6 +146,17 @@ function lockRef(testId: string, studentUid: string) {
   return db.collection('testAccessLocks').doc(getAccessLockDocumentId(testId, studentUid));
 }
 
+// A server-owned session marker prevents a second browser/device from starting
+// another Attempt while the original client is retrying a hard-lock report.
+function activeAttemptRef(testId: string, studentUid: string) {
+  return db.collection('activeTestAttempts').doc(getAccessLockDocumentId(testId, studentUid));
+}
+
+function monitoringLeaseExpired(value: unknown): boolean {
+  const timestamp = value instanceof Timestamp ? value.toMillis() : 0;
+  return timestamp < Date.now() - MONITORING_LEASE_MS;
+}
+
 async function assertUnlocked(testId: string, studentUid: string): Promise<void> {
   const snap = await lockRef(testId, studentUid).get();
   if (snap.exists && lower(snap.data()?.status) === 'locked') {
@@ -175,6 +191,115 @@ function publicLock(docId: string, data: Record<string, unknown>) {
   };
 }
 
+function storagePathFromUrl(value: unknown): string | null {
+  const url = text(value);
+  const marker = '/o/';
+  const markerIndex = url.indexOf(marker);
+  if (!url || markerIndex < 0) return null;
+  const encodedPath = url.slice(markerIndex + marker.length).split('?')[0];
+  try {
+    const path = decodeURIComponent(encodedPath);
+    return path.startsWith('tests/') ? path : null;
+  } catch {
+    return null;
+  }
+}
+
+function materialPaths(value: unknown, paths = new Set<string>(), depth = 0): string[] {
+  if (depth > 12 || value == null) return [...paths];
+  if (typeof value === 'string') {
+    const path = storagePathFromUrl(value);
+    if (path) paths.add(path);
+    return [...paths];
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => materialPaths(item, paths, depth + 1));
+    return [...paths];
+  }
+  if (typeof value === 'object') {
+    Object.values(asRecord(value)).forEach((item) => materialPaths(item, paths, depth + 1));
+  }
+  return [...paths];
+}
+
+function replaceMaterialUrls(value: unknown, sessionId: string, materialBase: string, depth = 0): unknown {
+  if (depth > 12 || value == null) return value;
+  if (typeof value === 'string') {
+    const path = storagePathFromUrl(value);
+    return path ? materialProxyUrl(materialBase, sessionId, path) : value;
+  }
+  if (Array.isArray(value)) return value.map((item) => replaceMaterialUrls(item, sessionId, materialBase, depth + 1));
+  if (typeof value === 'object') {
+    return Object.fromEntries(Object.entries(asRecord(value)).map(([key, item]) => [
+      key,
+      replaceMaterialUrls(item, sessionId, materialBase, depth + 1),
+    ]));
+  }
+  return value;
+}
+
+/*
+ * Tests have historically stored upload URLs at several levels (files,
+ * question image refs, and writing prompts), so this deliberately walks the
+ * whole Test payload rather than relying on one schema branch.
+ */
+function testMaterialPaths(testData: Record<string, unknown>): string[] {
+  const paths = new Set<string>();
+  materialPaths(testData, paths);
+  return [...paths];
+}
+
+function materialProxyUrl(materialBase: string, sessionId: string, path: string): string {
+  return `${materialBase}/getTestMaterial?session=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`;
+}
+
+function materialBaseForRequest(req: Request): string {
+  const host = req.get('host') || '';
+  if (host.includes('localhost') || host.includes('127.0.0.1')) {
+    return `http://${host}/${process.env.GCLOUD_PROJECT || 'hanh94esl-functions-test'}/us-central1`;
+  }
+  return PUBLIC_FUNCTIONS_BASE;
+}
+
+async function protectStudentTestMaterial(
+  testId: string,
+  actorUid: string,
+  testData: Record<string, unknown>,
+  materialBase: string,
+  enforceStudentLock: boolean,
+) {
+  const paths = testMaterialPaths(testData);
+  if (paths.length === 0) return testData;
+  const sessionId = randomUUID();
+  await db.collection('testMaterialSessions').doc(sessionId).create({
+    testId,
+    actorUid,
+    enforceStudentLock,
+    paths,
+    expiresAt: Timestamp.fromMillis(Date.now() + 15 * 60_000),
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return replaceMaterialUrls(testData, sessionId, materialBase) as Record<string, unknown>;
+}
+
+async function revokeTestMaterialTokens(testId: string): Promise<boolean> {
+  const testSnap = await db.collection('tests').doc(testId).get();
+  if (!testSnap.exists) return true;
+  const paths = testMaterialPaths(testSnap.data() || {});
+  const outcomes = await Promise.all(paths.map(async (path) => {
+    try {
+      // Existing uploader-generated Firebase download URLs are bearer URLs.
+      // Clearing their token prevents a cached raw URL from outliving a lock.
+      await storage.bucket().file(path).setMetadata({ metadata: { firebaseStorageDownloadTokens: '' } });
+      return true;
+    } catch (error) {
+      console.warn('[test-access] failed to revoke material token', { testId, path, error });
+      return false;
+    }
+  }));
+  return outcomes.every(Boolean);
+}
+
 function onHttp(handler: (req: Request, res: Response, auth: AuthContext) => Promise<void>) {
   return region.https.onRequest(async (req, res) => {
     if (setCors(req, res)) return;
@@ -202,14 +327,69 @@ export const getTest = onHttp(async (req, res, auth) => {
   if (auth.role === 'student') {
     const { testSnap, testData } = await requireAssignedTest(auth, testId);
     await assertUnlocked(testId, auth.decoded.uid);
-    res.status(200).json({ id: testSnap.id, ...testData });
+    res.status(200).json({
+      id: testSnap.id,
+      ...(await protectStudentTestMaterial(testId, auth.decoded.uid, testData, materialBaseForRequest(req), true)),
+    });
     return;
   }
 
   requireTeacher(auth);
   const testSnap = await db.collection('tests').doc(testId).get();
   if (!testSnap.exists) throw new HttpError(404, 'Test not found.');
-  res.status(200).json({ id: testSnap.id, ...testSnap.data() });
+  res.status(200).json({
+    id: testSnap.id,
+    ...(await protectStudentTestMaterial(
+      testId,
+      auth.decoded.uid,
+      testSnap.data() || {},
+      materialBaseForRequest(req),
+      false,
+    )),
+  });
+});
+
+// Browser media elements cannot attach an Authorization header. A short-lived,
+// opaque session preserves that constraint while this endpoint re-checks the
+// lock for every request, including a copied media URL after the test is locked.
+export const getTestMaterial = region.https.onRequest(async (req, res) => {
+  if (setCors(req, res)) return;
+  try {
+    const auth = await authenticate(req);
+    const sessionId = text(req.query.session);
+    const path = text(req.query.path);
+    if (!sessionId || !path) throw new HttpError(400, 'Missing material context.');
+    const sessionSnap = await db.collection('testMaterialSessions').doc(sessionId).get();
+    if (!sessionSnap.exists) throw new HttpError(404, 'Material session not found.');
+    const session = sessionSnap.data() || {};
+    const expiresAt = session.expiresAt instanceof Timestamp ? session.expiresAt.toMillis() : 0;
+    const testId = text(session.testId);
+    const actorUid = text(session.actorUid);
+    const allowedPaths = Array.isArray(session.paths) ? session.paths.map(text) : [];
+    if (!testId || !actorUid || expiresAt <= Date.now() || !allowedPaths.includes(path)) {
+      throw new HttpError(403, 'Material access denied.');
+    }
+    if (auth.decoded.uid !== actorUid) throw new HttpError(403, 'Material access denied.');
+    if (session.enforceStudentLock === true) await assertUnlocked(testId, actorUid);
+    const file = storage.bucket().file(path);
+    const [metadata] = await file.getMetadata();
+    res.set('Content-Type', String(metadata.contentType || 'application/octet-stream'));
+    res.set('Cache-Control', 'private, no-store');
+    file.createReadStream()
+      .on('error', (error) => {
+        console.error('[test-access] material stream failed', error);
+        if (!res.headersSent) res.status(404).json({ ok: false, error: 'Material not found.' });
+        else res.end();
+      })
+      .pipe(res);
+  } catch (error) {
+    if (error instanceof HttpError) {
+      res.status(error.status).json({ ok: false, error: error.message });
+      return;
+    }
+    console.error('[test-access] material request failed', error);
+    res.status(500).json({ ok: false, error: 'Unable to load material.' });
+  }
 });
 
 export const getTestAccess = onHttp(async (req, res, auth) => {
@@ -276,12 +456,14 @@ export const startAttempt = onHttp(async (req, res, auth) => {
     : db.collection('attempts').doc();
   const resultRef = db.collection('testResults').doc(attemptRef.id);
   const accessRef = lockRef(testId, auth.decoded.uid);
+  const activeRef = activeAttemptRef(testId, auth.decoded.uid);
 
   let existing = false;
   await db.runTransaction(async (transaction) => {
-    const [accessSnap, attemptSnap] = await Promise.all([
+    const [accessSnap, attemptSnap, activeSnap] = await Promise.all([
       transaction.get(accessRef),
       transaction.get(attemptRef),
+      transaction.get(activeRef),
     ]);
     if (accessSnap.exists && lower(accessSnap.data()?.status) === 'locked') {
       throw new HttpError(423, 'Test Locked');
@@ -292,6 +474,9 @@ export const startAttempt = onHttp(async (req, res, auth) => {
       }
       existing = true;
       return;
+    }
+    if (activeSnap.exists) {
+      throw new HttpError(409, 'An active attempt already exists for this test.');
     }
 
     const identity = {
@@ -319,6 +504,14 @@ export const startAttempt = onHttp(async (req, res, auth) => {
       startedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
+    transaction.set(activeRef, {
+      testId,
+      studentUid: auth.decoded.uid,
+      attemptId: attemptRef.id,
+      startedAt: FieldValue.serverTimestamp(),
+      lastMonitoringAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
   });
 
   res.status(200).json({
@@ -338,12 +531,14 @@ export const saveAnswers = onHttp(async (req, res, auth) => {
   const attemptRef = db.collection('attempts').doc(attemptId);
   const resultRef = db.collection('testResults').doc(attemptId);
   const accessRef = lockRef(testId, auth.decoded.uid);
+  const activeRef = activeAttemptRef(testId, auth.decoded.uid);
 
   await db.runTransaction(async (transaction) => {
-    const [accessSnap, attemptSnap, resultSnap] = await Promise.all([
+    const [accessSnap, attemptSnap, resultSnap, activeSnap] = await Promise.all([
       transaction.get(accessRef),
       transaction.get(attemptRef),
       transaction.get(resultRef),
+      transaction.get(activeRef),
     ]);
     if (!attemptSnap.exists || !resultSnap.exists) throw new HttpError(404, 'Attempt not found.');
     const attempt = attemptSnap.data() || {};
@@ -351,6 +546,9 @@ export const saveAnswers = onHttp(async (req, res, auth) => {
       throw new HttpError(403, 'Forbidden.');
     }
     if (accessSnap.exists && lower(accessSnap.data()?.status) === 'locked') throw new HttpError(423, 'Test Locked');
+    if (!activeSnap.exists || text(activeSnap.data()?.attemptId) !== attemptId || monitoringLeaseExpired(activeSnap.data()?.lastMonitoringAt)) {
+      throw new HttpError(423, 'Monitoring connection expired.');
+    }
     if (!canTransitionAttemptToLocked(attempt.status)) throw new HttpError(409, 'Attempt is no longer active.');
 
     transaction.update(resultRef, {
@@ -370,12 +568,14 @@ export const submitAttempt = onHttp(async (req, res, auth) => {
   const attemptRef = db.collection('attempts').doc(attemptId);
   const resultRef = db.collection('testResults').doc(attemptId);
   const accessRef = lockRef(testId, auth.decoded.uid);
+  const activeRef = activeAttemptRef(testId, auth.decoded.uid);
 
   await db.runTransaction(async (transaction) => {
-    const [accessSnap, attemptSnap, resultSnap] = await Promise.all([
+    const [accessSnap, attemptSnap, resultSnap, activeSnap] = await Promise.all([
       transaction.get(accessRef),
       transaction.get(attemptRef),
       transaction.get(resultRef),
+      transaction.get(activeRef),
     ]);
     if (!attemptSnap.exists || !resultSnap.exists) throw new HttpError(404, 'Attempt not found.');
     const attempt = attemptSnap.data() || {};
@@ -383,6 +583,9 @@ export const submitAttempt = onHttp(async (req, res, auth) => {
       throw new HttpError(403, 'Forbidden.');
     }
     if (accessSnap.exists && lower(accessSnap.data()?.status) === 'locked') throw new HttpError(423, 'Test Locked');
+    if (!activeSnap.exists || text(activeSnap.data()?.attemptId) !== attemptId || monitoringLeaseExpired(activeSnap.data()?.lastMonitoringAt)) {
+      throw new HttpError(423, 'Monitoring connection expired.');
+    }
     if (!canTransitionAttemptToLocked(attempt.status)) throw new HttpError(409, 'Attempt is no longer active.');
 
     const testType = lower(attempt.testType);
@@ -409,9 +612,34 @@ export const submitAttempt = onHttp(async (req, res, auth) => {
       updatedAt: FieldValue.serverTimestamp(),
       antiCheat: submitted.antiCheat,
     });
+    transaction.delete(activeRef);
   });
 
   res.status(200).json({ ok: true, resultId: resultRef.id });
+});
+
+export const monitorAttempt = onHttp(async (req, res, auth) => {
+  requireStudent(auth);
+  const testId = text(req.body?.testId);
+  const attemptId = text(req.body?.attemptId);
+  if (!testId || !attemptId) throw new HttpError(400, 'Missing monitoring context.');
+  const accessRef = lockRef(testId, auth.decoded.uid);
+  const activeRef = activeAttemptRef(testId, auth.decoded.uid);
+  const attemptRef = db.collection('attempts').doc(attemptId);
+  await db.runTransaction(async (transaction) => {
+    const [accessSnap, activeSnap, attemptSnap] = await Promise.all([
+      transaction.get(accessRef), transaction.get(activeRef), transaction.get(attemptRef),
+    ]);
+    if (accessSnap.exists && lower(accessSnap.data()?.status) === 'locked') throw new HttpError(423, 'Test Locked');
+    if (!attemptSnap.exists || text(attemptSnap.data()?.studentUid) !== auth.decoded.uid || text(attemptSnap.data()?.testId) !== testId) {
+      throw new HttpError(403, 'Forbidden.');
+    }
+    if (!activeSnap.exists || text(activeSnap.data()?.attemptId) !== attemptId || !canTransitionAttemptToLocked(attemptSnap.data()?.status)) {
+      throw new HttpError(409, 'Attempt is no longer active.');
+    }
+    transaction.update(activeRef, { lastMonitoringAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+  });
+  res.status(200).json({ ok: true });
 });
 
 export const lockTestAccess = onHttp(async (req, res, auth) => {
@@ -425,6 +653,7 @@ export const lockTestAccess = onHttp(async (req, res, auth) => {
   const attemptRef = db.collection('attempts').doc(attemptId);
   const resultRef = db.collection('testResults').doc(attemptId);
   const accessRef = lockRef(testId, auth.decoded.uid);
+  const activeRef = activeAttemptRef(testId, auth.decoded.uid);
   const eventRef = accessRef.collection('events').doc(`locked--${attemptId}`);
   const violationRef = attemptRef.collection('violations').doc('screen-sharing-stopped');
   let locked = false;
@@ -467,6 +696,8 @@ export const lockTestAccess = onHttp(async (req, res, auth) => {
       lockedAt: FieldValue.serverTimestamp(),
       unlockedAt: null,
       unlockedBy: null,
+      materialRevocationStatus: 'pending',
+      materialRevocationUpdatedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     };
     transaction.set(accessRef, lockData, { merge: true });
@@ -481,9 +712,12 @@ export const lockTestAccess = onHttp(async (req, res, auth) => {
         status: 'locked',
         lockReason: 'screen_sharing_stopped',
         lockedAt: FieldValue.serverTimestamp(),
+        'antiCheat.violations': FieldValue.increment(1),
+        violationCount: FieldValue.increment(1),
         updatedAt: FieldValue.serverTimestamp(),
       });
     }
+    transaction.delete(activeRef);
     if (!eventSnap.exists) {
       transaction.create(eventRef, {
         event: 'locked',
@@ -512,8 +746,37 @@ export const lockTestAccess = onHttp(async (req, res, auth) => {
     locked = true;
   });
 
+  if (locked) {
+    const materialsSecured = await revokeTestMaterialTokens(testId);
+    await accessRef.update({
+      materialRevocationStatus: materialsSecured ? 'complete' : 'pending',
+      materialRevocationUpdatedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    if (!materialsSecured) {
+      throw new HttpError(503, 'Test locked, but material revocation is still retrying.');
+    }
+  }
+
   res.status(200).json({ ok: true, locked, attemptId });
 });
+
+export const retryPendingMaterialRevocations = region.pubsub
+  .schedule('every 5 minutes')
+  .onRun(async () => {
+    const locks = await db.collection('testAccessLocks').where('status', '==', 'locked').get();
+    await Promise.all(locks.docs
+      .filter((lock) => text(lock.data().materialRevocationStatus) === 'pending')
+      .map(async (lock) => {
+        const secured = await revokeTestMaterialTokens(text(lock.data().testId));
+        await lock.ref.update({
+          materialRevocationStatus: secured ? 'complete' : 'pending',
+          materialRevocationUpdatedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }));
+    return null;
+  });
 
 export const listTestAccessLocks = onHttp(async (req, res, auth) => {
   requireTeacher(auth);

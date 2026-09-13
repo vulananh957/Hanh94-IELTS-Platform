@@ -4,7 +4,7 @@ import {
   initializeTestEnvironment,
   type RulesTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { doc, getDoc, getDocs, collection, setDoc } from 'firebase/firestore';
+import { doc, getDoc, getDocs, collection, setDoc, Timestamp } from 'firebase/firestore';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 const projectId = 'hanh94esl-functions-test';
@@ -38,6 +38,11 @@ async function callFunction<T>(name: string, token: string, body?: unknown): Pro
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: response.status, data: await response.json() as T };
+}
+
+async function callUnauthenticated(name: string): Promise<number> {
+  const response = await fetch(`${functionsBase}/${name}`);
+  return response.status;
 }
 
 const describeWithEmulator = process.env.FIRESTORE_EMULATOR_HOST ? describe : describe.skip;
@@ -76,6 +81,7 @@ describeWithEmulator('test access Functions', () => {
 
   it('locks one active attempt idempotently, rejects further writes, and starts clean after teacher unlock', async () => {
     const student = await createUser('student@example.com', 'student');
+    const otherStudent = await createUser('other@example.com', 'student');
     const teacher = await createUser('teacher@example.com', 'teacher');
 
     const firstStart = await callFunction<{ attemptId: string; resultId: string }>('startAttempt', student.token, {
@@ -87,6 +93,12 @@ describeWithEmulator('test access Functions', () => {
       testId: 'test-a', requestId: 'request-first-attempt',
     });
     expect(duplicateStart.data.attemptId).toBe(firstStart.data.attemptId);
+    expect((await callFunction('startAttempt', student.token, {
+      testId: 'test-a', requestId: 'request-second-browser',
+    })).status).toBe(409);
+    expect((await callFunction('monitorAttempt', student.token, {
+      testId: 'test-a', attemptId: firstStart.data.attemptId,
+    })).status).toBe(200);
 
     const lockBody = {
       testId: 'test-a',
@@ -96,6 +108,15 @@ describeWithEmulator('test access Functions', () => {
     };
     expect((await callFunction<{ locked: boolean }>('lockTestAccess', student.token, lockBody)).data.locked).toBe(true);
     expect((await callFunction<{ locked: boolean }>('lockTestAccess', student.token, lockBody)).data.locked).toBe(true);
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'testMaterialSessions', 'locked-material-session'), {
+        testId: 'test-a', actorUid: student.uid, enforceStudentLock: true, paths: ['tests/reading.pdf'],
+        expiresAt: Timestamp.fromMillis(Date.now() + 60_000),
+      });
+    });
+    expect(await callUnauthenticated('getTestMaterial?session=locked-material-session&path=tests%2Freading.pdf')).toBe(401);
+    expect((await callFunction('getTestMaterial?session=locked-material-session&path=tests%2Freading.pdf', otherStudent.token)).status).toBe(403);
+    expect((await callFunction('getTestMaterial?session=locked-material-session&path=tests%2Freading.pdf', student.token)).status).toBe(423);
 
     expect((await callFunction('saveAnswers', student.token, {
       testId: 'test-a', attemptId: firstStart.data.attemptId, answers: { 1: 'A' },
