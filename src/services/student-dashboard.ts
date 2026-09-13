@@ -12,6 +12,7 @@ import {
   getDoc,
 } from 'firebase/firestore';
 import { firebaseApp } from './firebase';
+import { fetchAssignedTestSummaries } from './test-access';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -176,7 +177,7 @@ export async function fetchStudentDashboard(
   const promise = (async (): Promise<StudentDashboardStats> => {
 
     // ── 1. Parallel fetch ─────────────────────────────────────────────────────
-    const [userSnap, resultsSnap, writingSnap, testsSnap] = await Promise.all([
+    const [userSnap, resultsSnap, writingSnap, assignedTests] = await Promise.all([
       // User profile
       getDoc(doc(db, 'users', studentEmail)).catch(() => null),
 
@@ -194,8 +195,7 @@ export async function fetchStudentDashboard(
         ),
       ).catch(() => null),
 
-      // All tests (for available-count logic)
-      getDocs(collection(db, 'tests')).catch(() => null),
+      fetchAssignedTestSummaries().catch(() => []),
     ]);
 
     // ── 2. User class ─────────────────────────────────────────────────────────
@@ -217,9 +217,9 @@ export async function fetchStudentDashboard(
 
     // ── 3. Build test skill map from tests collection (source of truth) ───────
     const testSkillMap = new Map<string, 'listening' | 'reading' | 'writing'>();
-    testsSnap?.docs.forEach((d) => {
-      const skill = asSkill(d.data().skill);
-      if (skill) testSkillMap.set(d.id, skill);
+    assignedTests.forEach((test) => {
+      const skill = asSkill(test.skill);
+      if (skill) testSkillMap.set(test.id, skill);
     });
 
     // ── 4. Deduplicate testResults by testId (keep latest per test) ───────────
@@ -339,33 +339,7 @@ export async function fetchStudentDashboard(
     const testsCompleted = latestResults.size + writingCompletedCount;
 
     // ── 10. Available tests (class-filtered, not yet completed by this student) ─
-    let availableTests = 0;
-    try {
-      const classesSnap = await getDocs(collection(db, 'classes'));
-      const classCodeToId = new Map<string, string>();
-      classesSnap.docs.forEach((d) => {
-        const data = d.data();
-        if (data.code) classCodeToId.set(data.code, d.id);
-      });
-
-      testsSnap?.docs.forEach((d) => {
-        const test = d.data();
-        // ✅ Do NOT subtract completed tests — "Available Tests" = all class-accessible tests
-        // (matches old dashboard: filter by class only, no completion check)
-        const dist = test.classAssignment?.distribution;
-        if (!dist || dist === 'all') { availableTests += 1; return; }
-        if (dist === 'specific') {
-          const selected: string[] = test.classAssignment.selectedClasses ?? [];
-          if (!userClassId) return;
-          const classDocId = classCodeToId.get(userClassId) ?? userClassId;
-          const hasAccess =
-            selected.includes(userClassId) ||
-            selected.includes(classDocId) ||
-            selected.some((s) => classCodeToId.get(s) === classDocId);
-          if (hasAccess) availableTests += 1;
-        }
-      });
-    } catch { /* non-critical */ }
+    const availableTests = assignedTests.length;
 
     // ── 11. Weekly activity chart ─────────────────────────────────────────────
     const weeklyActivity = buildWeeklyActivity(weeklyRaw);
@@ -413,7 +387,7 @@ export async function fetchStudentRecentActivity(
   const db = getFirestore(firebaseApp);
 
   const promise = (async (): Promise<StudentActivity[]> => {
-    const [resultsSnap, writingSnap, testsSnap] = await Promise.all([
+    const [resultsSnap, writingSnap, assignedTests] = await Promise.all([
       // ✅ CORRECT collection: testResults
       getDocs(
         query(
@@ -431,15 +405,15 @@ export async function fetchStudentRecentActivity(
           limit(10),
         ),
       ).catch(() => null),
-      getDocs(collection(db, 'tests')).catch(() => null),
+      fetchAssignedTestSummaries().catch(() => []),
     ]);
 
     const raw: StudentActivity[] = [];
 
     const testSkillMap = new Map<string, 'listening' | 'reading' | 'writing'>();
-    testsSnap?.docs.forEach((d) => {
-      const skill = asSkill(d.data().skill);
-      if (skill) testSkillMap.set(d.id, skill);
+    assignedTests.forEach((test) => {
+      const skill = asSkill(test.skill);
+      if (skill) testSkillMap.set(test.id, skill);
     });
 
     resultsSnap?.docs.forEach((d) => {

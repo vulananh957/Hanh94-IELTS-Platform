@@ -28,6 +28,13 @@ service cloud.firestore {
       );
     }
 
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.role == 'admin' ||
+        userRole() == 'admin'
+      );
+    }
+
     function isTestCreator() {
       return isSignedIn() && (
         request.auth.token.role == 'testCreator' ||
@@ -43,11 +50,44 @@ service cloud.firestore {
     }
 
     function isTeacherOrCreator() {
-      return isTeacher() || isTestCreator();
+      return isTeacher() || isTestCreator() || isAdmin();
     }
 
     function isOwner(ownerUid) {
       return isSignedIn() && request.auth.uid == ownerUid;
+    }
+
+    function studentClassId() {
+      return userDocExists() && ('classId' in get(/databases/$(database)/documents/users/$(authEmail())).data)
+        ? get(/databases/$(database)/documents/users/$(authEmail())).data.classId
+        : null;
+    }
+
+    function studentClassCode() {
+      return userDocExists() && ('classCode' in get(/databases/$(database)/documents/users/$(authEmail())).data)
+        ? get(/databases/$(database)/documents/users/$(authEmail())).data.classCode
+        : null;
+    }
+
+    function isAssignedTest(testData) {
+      return isStudent() && (
+        !('classAssignment' in testData) ||
+        !('distribution' in testData.classAssignment) ||
+        testData.classAssignment.distribution == 'all' ||
+        (
+          testData.classAssignment.distribution == 'specific' &&
+          ('selectedClasses' in testData.classAssignment) &&
+          (
+            studentClassId() in testData.classAssignment.selectedClasses ||
+            studentClassCode() in testData.classAssignment.selectedClasses
+          )
+        )
+      );
+    }
+
+    function hasActiveTestLock(testId) {
+      return exists(/databases/$(database)/documents/testAccessLocks/$(testId + '--' + request.auth.uid)) &&
+        get(/databases/$(database)/documents/testAccessLocks/$(testId + '--' + request.auth.uid)).data.status == 'locked';
     }
 
     // users collection (doc id = email)
@@ -67,7 +107,12 @@ service cloud.firestore {
     }
 
     match /tests/{testId} {
-      allow read: if isSignedIn();
+      // Students may fetch one assigned, unlocked Test. Collection scans are
+      // intentionally denied because each Test document contains answer data.
+      allow get: if isTeacherOrCreator() || (
+        isAssignedTest(resource.data) && !hasActiveTestLock(testId)
+      );
+      allow list: if isTeacherOrCreator();
       allow create: if isTeacherOrCreator();
 
       // Allow teacher/testCreator to delete old tests even when ownerUid is missing/legacy.
@@ -94,13 +139,9 @@ service cloud.firestore {
         isTeacherOrCreator()
       );
 
-      allow create: if isStudent() && request.resource.data.studentUid == request.auth.uid;
-
-      allow update: if isSignedIn() && (
-        request.auth.uid == resource.data.studentUid ||
-        authEmail() == resource.data.studentEmail ||
-        isTeacherOrCreator()
-      );
+      // Attempt lifecycle writes go through authenticated backend functions so
+      // lock checks and status transitions are atomic.
+      allow create, update: if isTeacherOrCreator();
 
       allow delete: if isTeacherOrCreator();
     }
@@ -111,12 +152,8 @@ service cloud.firestore {
         isTeacherOrCreator()
       );
 
-      allow create: if isStudent() && request.resource.data.studentEmail == authEmail();
-
-      allow update: if isSignedIn() && (
-        authEmail() == resource.data.studentEmail ||
-        isTeacherOrCreator()
-      );
+      // Student autosave and submit go through backend lock enforcement.
+      allow create, update: if isTeacherOrCreator();
 
       allow delete: if isTeacherOrCreator();
     }
@@ -138,6 +175,18 @@ service cloud.firestore {
     match /classes/{classId} {
       allow read: if isSignedIn();
       allow write: if isTeacherOrCreator();
+    }
+
+    match /testAccessLocks/{lockId} {
+      allow read: if isTeacherOrCreator() || (
+        isStudent() && resource.data.studentUid == request.auth.uid
+      );
+      allow write: if false;
+
+      match /events/{eventId} {
+        allow read: if isTeacherOrCreator();
+        allow write: if false;
+      }
     }
 
     // Deny everything else by default.

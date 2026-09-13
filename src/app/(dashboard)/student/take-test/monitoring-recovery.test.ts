@@ -4,6 +4,7 @@ import {
   getMonitoringRecoveryStep,
   getMonitoringViolationType,
   isEntireScreenShare,
+  shouldHardLockMonitoringViolation,
 } from './monitoring-recovery';
 
 describe('getMonitoringRecoveryStep', () => {
@@ -139,4 +140,26 @@ describe('monitoring requirement validation', () => {
   ] as const)('maps %s track state to %s', (source, track, expected) => {
     expect(getMonitoringViolationType(source, track)).toBe(expected);
   });
+
+  it.each([
+    ['screen_sharing_stopped', true, false, false, true],
+    ['screen_share_muted', true, false, false, false],
+    ['screen_share_disabled', true, false, false, false],
+    ['camera_stopped', true, false, false, false],
+    ['fullscreen_exit', true, false, false, false],
+    ['tab_switch', true, false, false, false],
+    ['screen_sharing_stopped', false, false, false, false],
+    ['screen_sharing_stopped', true, true, false, false],
+    ['screen_sharing_stopped', true, false, true, false],
+  ] as const)(
+    'hard-lock policy for %s (active=%s submitting=%s cleanup=%s) is %s',
+    (violation, active, submitting, cleanup, expected) => {
+      expect(shouldHardLockMonitoringViolation({
+        violation,
+        attemptActive: active,
+        submitting,
+        monitoringCleanup: cleanup,
+      })).toBe(expected);
+    },
+  );
 });

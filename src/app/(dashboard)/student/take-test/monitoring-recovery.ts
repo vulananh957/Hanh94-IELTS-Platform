@@ -1,4 +1,16 @@
 export type MonitoringRecoveryStep = 'monitoring' | 'fullscreen' | 'ready';
+
+export function shouldHardLockMonitoringViolation(input: {
+  violation: string;
+  attemptActive: boolean;
+  submitting: boolean;
+  monitoringCleanup: boolean;
+}): boolean {
+  return input.violation === 'screen_sharing_stopped'
+    && input.attemptActive
+    && !input.submitting
+    && !input.monitoringCleanup;
+}
 export type MonitoringSource = 'camera' | 'screen';
 
 type MonitoringTrackState = {

@@ -20,6 +20,12 @@ import {
   type TestHubTest,
   type TestSkill,
 } from '@/services/test-hub';
+import {
+  listLockedTestAccess,
+  unlockTestAccess,
+  type TestAccessLock,
+} from '@/services/test-access';
+import { UnlockTestDialog } from './UnlockTestDialog';
 import '../teacher-dashboard.css';
 import './test-hub.css';
 import '../../student/performance/performance.css';
@@ -58,6 +64,7 @@ type StudentsStatusRow = {
   hasAttempted: boolean;
   writingGradingStatus?: 'pending' | 'graded' | null;
   testResultId?: string;
+  accessLock?: TestAccessLock;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -395,6 +402,9 @@ export function TestHubContent() {
   const [studentsStatusRows, setStudentsStatusRows] = useState<StudentsStatusRow[]>([]);
   const [studentsStatusLoading, setStudentsStatusLoading] = useState(false);
   const [studentsStatusError, setStudentsStatusError] = useState<string | null>(null);
+  const [lockedOnly, setLockedOnly] = useState(false);
+  const [unlockTarget, setUnlockTarget] = useState<TestAccessLock | null>(null);
+  const [unlockToast, setUnlockToast] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TestHubTest | null>(null);
   const [distributionTarget, setDistributionTarget] = useState<TestHubTest | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -465,7 +475,6 @@ export function TestHubContent() {
 
   const sidebarRef = useRef<HTMLElement | null>(null);
   const loadSeqRef = useRef(0);
-  const studentsStatusCacheRef = useRef<Map<string, StudentsStatusRow[]>>(new Map());
   const studentsAutoOpenRef = useRef(false);
   const studentsAutoScrollRef = useRef(false);
 
@@ -566,10 +575,6 @@ export function TestHubContent() {
     });
     return map;
   }, [classes]);
-
-  useEffect(() => {
-    studentsStatusCacheRef.current.clear();
-  }, [tests, classes, students]);
 
   // Normalize selectedClasses to use class codes for consistent key matching
   const normalizeSelectedClasses = (rawClasses: string[]): string[] => {
@@ -719,6 +724,7 @@ export function TestHubContent() {
   useEffect(() => {
     if (!studentsTest) return;
     studentsAutoScrollRef.current = false;
+    setLockedOnly(false);
   }, [studentsTest]);
 
   useEffect(() => {
@@ -780,14 +786,6 @@ export function TestHubContent() {
       return;
     }
 
-    const cachedRows = studentsStatusCacheRef.current.get(studentsTest.id);
-    if (cachedRows) {
-      setStudentsStatusRows(cachedRows);
-      setStudentsStatusError(null);
-      setStudentsStatusLoading(false);
-      return;
-    }
-
     let cancelled = false;
 
     const loadStudentsStatus = async () => {
@@ -842,10 +840,11 @@ export function TestHubContent() {
             });
 
         const isWritingTest = studentsTest.skill === 'writing';
-        const [testResultsSnapshot, attemptsSnapshot, writingSnapshot] = await Promise.all([
+        const [testResultsSnapshot, attemptsSnapshot, writingSnapshot, accessLocks] = await Promise.all([
           getDocs(query(collection(db, 'testResults'), where('testId', '==', studentsTest.id))),
           getDocs(query(collection(db, 'attempts'), where('testId', '==', studentsTest.id), where('status', '==', 'completed'))),
           getDocs(query(collection(db, 'writing'), where('testId', '==', studentsTest.id))),
+          listLockedTestAccess(studentsTest.id),
         ]);
 
         if (cancelled) return;
@@ -857,6 +856,11 @@ export function TestHubContent() {
         const latestCompletedAtByEmail = new Map<string, number | null>();
         const violationCountByEmail = new Map<string, number>();
         const writingGradingStatusByEmail = new Map<string, 'pending' | 'graded'>();
+        const lockByEmail = new Map(
+          accessLocks
+            .filter((lock) => lock.status === 'locked' && lock.studentEmail)
+            .map((lock) => [String(lock.studentEmail).trim().toLowerCase(), lock]),
+        );
 
         const updateScore = (email: string, score: number | null, completedAtMs: number | null, isTestResult = false) => {
           if (!email) return;
@@ -1007,6 +1011,7 @@ export function TestHubContent() {
             hasAttempted: attemptedStudents.has(email),
             writingGradingStatus: studentsTest.skill === 'writing' ? (writingGradingStatusByEmail.get(email) ?? null) : null,
             testResultId: testResultIdByEmail.get(email),
+            accessLock: lockByEmail.get(email),
           };
         });
 
@@ -1017,7 +1022,6 @@ export function TestHubContent() {
         });
 
         if (cancelled) return;
-        studentsStatusCacheRef.current.set(studentsTest.id, rows);
         setStudentsStatusRows(rows);
       } catch (err) {
         if (cancelled) return;
@@ -1043,6 +1047,28 @@ export function TestHubContent() {
     const dateText = date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: '2-digit' });
     const timeText = date.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
     return `${dateText} ${timeText}`;
+  };
+
+  const formatLockedAt = (value: string | null): string => {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+    return date.toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+  };
+
+  const visibleStudentsStatusRows = useMemo(
+    () => lockedOnly ? studentsStatusRows.filter((row) => row.accessLock?.status === 'locked') : studentsStatusRows,
+    [lockedOnly, studentsStatusRows],
+  );
+
+  const handleUnlocked = (unlockedLock: TestAccessLock) => {
+    const nextRows = studentsStatusRows.map((row) => (
+      row.accessLock?.id === unlockedLock.id ? { ...row, accessLock: undefined } : row
+    ));
+    setStudentsStatusRows(nextRows);
+    setUnlockTarget(null);
+    setUnlockToast('Test unlocked successfully.');
+    window.setTimeout(() => setUnlockToast(null), 4000);
   };
 
   const previewMedia = useMemo(() => previewMediaResolved || getPreviewMedia(previewData), [previewMediaResolved, previewData]);
@@ -1614,6 +1640,19 @@ export function TestHubContent() {
         </div>
       </main>
 
+      {unlockToast ? (
+        <div className="testhub-toast" role="status"><i className="fas fa-check-circle" /> {unlockToast}</div>
+      ) : null}
+
+      {unlockTarget ? (
+        <UnlockTestDialog
+          lock={unlockTarget}
+          onCancel={() => setUnlockTarget(null)}
+          onUnlock={unlockTestAccess}
+          onUnlocked={handleUnlocked}
+        />
+      ) : null}
+
       {previewTest ? (
         <div className="modal" onClick={() => setPreviewTest(null)}>
           <div className="modal-content preview-modal-content" onClick={(e) => e.stopPropagation()}>
@@ -1642,13 +1681,18 @@ export function TestHubContent() {
             <div className="modal-body">
               <h4 className="students-status-subtitle">Students Status for: {studentsTest.name}</h4>
 
+              <label className="locked-only-filter">
+                <input type="checkbox" checked={lockedOnly} onChange={(event) => setLockedOnly(event.target.checked)} />
+                <span>Locked only</span>
+              </label>
+
               <div className="students-status-head">
                 <div>Student</div>
                 <div>Last Completed</div>
                 <div>Latest Score</div>
                 <div>Flag Status</div>
                 <div>Status</div>
-                <div>Detail</div>
+                <div>Detail / Access</div>
               </div>
 
               <div className="students-status-list">
@@ -1656,10 +1700,10 @@ export function TestHubContent() {
                   <div className="loading"><i className="fas fa-spinner" /> Loading students data...</div>
                 ) : studentsStatusError ? (
                   <div className="empty-state"><p>{studentsStatusError}</p></div>
-                ) : studentsStatusRows.length === 0 ? (
-                  <div className="empty-state"><p>No students are assigned to this test.</p></div>
+                ) : visibleStudentsStatusRows.length === 0 ? (
+                  <div className="empty-state"><p>{lockedOnly ? 'No locked students for this test.' : 'No students are assigned to this test.'}</p></div>
                 ) : (
-                  studentsStatusRows.map((row) => {
+                  visibleStudentsStatusRows.map((row) => {
                     const score = row.latestScore;
                     const scoreClass = score == null
                       ? ''
@@ -1707,7 +1751,11 @@ export function TestHubContent() {
                         </div>
 
                         <div className="students-status-cell">
-                          {!row.hasAttempted ? (
+                          {row.accessLock ? (
+                            <span className="students-flag-danger" title="Screen sharing stopped">
+                              <i className="fas fa-display" /> Screen sharing stopped
+                            </span>
+                          ) : !row.hasAttempted ? (
                             <span className="students-flag-empty">-</span>
                           ) : row.violationCount === 0 ? (
                             <span className="students-flag-ok" title="No violations">
@@ -1725,13 +1773,29 @@ export function TestHubContent() {
                         </div>
 
                         <div className="students-status-cell">
-                          <span className={`student-status ${row.hasAttempted ? 'status-done' : 'status-not-done'}`}>
-                            {row.hasAttempted ? 'Completed' : 'Not Done'}
-                          </span>
+                          {row.accessLock ? (
+                            <div className="student-lock-status">
+                              <span className="student-status status-locked"><i className="fas fa-lock" /> Locked</span>
+                              <small>Locked {formatLockedAt(row.accessLock.lockedAt)}</small>
+                              <small title={row.accessLock.lockedAttemptId}>Attempt: {row.accessLock.lockedAttemptId}</small>
+                            </div>
+                          ) : (
+                            <span className={`student-status ${row.hasAttempted ? 'status-done' : 'status-not-done'}`}>
+                              {row.hasAttempted ? 'Completed' : 'Not Done'}
+                            </span>
+                          )}
                         </div>
 
                         <div className="students-status-cell">
-                          {row.hasAttempted && row.testResultId ? (
+                          {row.accessLock ? (
+                            <button
+                              className="btn btn-unlock"
+                              type="button"
+                              onClick={() => setUnlockTarget(row.accessLock!)}
+                            >
+                              <i className="fas fa-lock-open" /> Unlock test
+                            </button>
+                          ) : row.hasAttempted && row.testResultId ? (
                             <button
                               className="students-detail-btn"
                               onClick={() => {

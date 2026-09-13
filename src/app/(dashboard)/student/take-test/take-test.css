@@ -574,3 +574,59 @@
   border: none;
   min-height: 400px;
 }
+.tt-locked-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background:
+    radial-gradient(circle at top, rgba(0, 103, 105, 0.12), transparent 38%),
+    #f5faf8;
+}
+
+.tt-locked-card {
+  width: min(560px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: 1rem;
+  padding: clamp(2rem, 6vw, 3.5rem);
+  border-radius: 24px;
+  border: 1px solid rgba(185, 28, 28, 0.14);
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.14);
+  text-align: center;
+}
+
+.tt-locked-icon {
+  width: 68px;
+  height: 68px;
+  display: grid;
+  place-items: center;
+  border-radius: 20px;
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+  font-size: 1.7rem;
+}
+
+.tt-locked-card h1 {
+  margin: 0;
+  color: #7f1d1d;
+  font-family: var(--font-serif), 'Playfair Display', serif;
+  font-size: clamp(2rem, 6vw, 2.65rem);
+}
+
+.tt-locked-card p {
+  margin: 0;
+  color: #475569;
+  line-height: 1.65;
+}
+
+.tt-locked-card .tt-locked-note {
+  color: #7f1d1d;
+  font-weight: 700;
+}
+
+.tt-locked-card .tt-primary {
+  margin-top: 0.35rem;
+  min-width: 190px;
+}

@@ -15,16 +15,19 @@ type SkillFilter = 'all' | 'listening' | 'reading' | 'writing';
 
 function statusLabel(status: AssignmentStatus): string {
   if (status === 'NOT_DONE') return 'Not done';
+  if (status === 'LOCKED') return 'Locked';
   return 'Completed';
 }
 
 function statusIcon(status: AssignmentStatus): string {
   if (status === 'NOT_DONE') return 'fas fa-circle';
+  if (status === 'LOCKED') return 'fas fa-lock';
   return 'fas fa-check-circle';
 }
 
 function statusClass(status: AssignmentStatus): string {
   if (status === 'NOT_DONE') return 'sa-badge not-done';
+  if (status === 'LOCKED') return 'sa-badge locked';
   return 'sa-badge completed';
 }
 
@@ -276,7 +279,7 @@ export function AssignmentsContent() {
 
                 <div className="sa-filter-row">
                   <div className="sa-chip-group">
-                    {(['all', 'NOT_DONE', 'COMPLETED'] as const).map((value) => (
+                    {(['all', 'NOT_DONE', 'COMPLETED', 'LOCKED'] as const).map((value) => (
                       <button
                         key={value}
                         type="button"
@@ -324,6 +327,7 @@ export function AssignmentsContent() {
                   <div className="sa-card-grid">
                     {filteredAssignments.map((assignment) => {
                       const isCompleted = assignment.status === 'COMPLETED';
+                      const isLocked = assignment.status === 'LOCKED';
                       return (
                         <article key={assignment.id} className="sa-card">
                           <div className="sa-card-top">
@@ -361,8 +365,19 @@ export function AssignmentsContent() {
                             )}
                           </div>
 
+                          {isLocked ? (
+                            <div className="sa-lock-message">
+                              <strong>Screen sharing stopped</strong>
+                              <span>Ask your teacher to unlock this test. You will restart from the beginning.</span>
+                            </div>
+                          ) : null}
+
                           <div className="sa-card-footer basic">
-                            {isCompleted ? (
+                            {isLocked ? (
+                              <button type="button" className="sa-card-action locked" disabled>
+                                <i className="fas fa-lock" /> Locked
+                              </button>
+                            ) : isCompleted ? (
                               <>
                                 <a href={assignmentReviewHref(assignment.id)} className="sa-card-action">
                                   Review result

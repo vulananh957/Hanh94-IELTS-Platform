@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getAuth, onAuthStateChanged, type User } from 'firebase/auth';
-import { addDoc, collection, doc, getDoc, getFirestore, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { ref, uploadBytes } from 'firebase/storage';
 import { firebaseApp, firebaseStorage } from '@/services/firebase';
 import { fetchStudentClassDisplayName } from '@/services/student-profile';
@@ -23,7 +22,6 @@ import {
   calculateScore,
 } from './take-test-utils';
 import {
-  buildEvidenceAttemptPath,
   buildEvidenceCapturePath,
   type EvidenceAttemptPathInput,
 } from './evidence-storage';
@@ -33,9 +31,18 @@ import {
   getMonitoringViolationType,
   isEntireScreenShare,
   isLiveMonitoringTrack,
+  shouldHardLockMonitoringViolation,
 } from './monitoring-recovery';
+import {
+  TestAccessLockedError,
+  clearPendingHardLock,
+  getPendingHardLock,
+  hardLockAttempt,
+  rememberPendingHardLock,
+} from '@/services/test-access';
 import { invalidateStudentCache } from '@/services/student-dashboard';
 import { ZoomableImage } from '@/components/shared/zoomable-image';
+import { TestLockedPanel } from '@/components/test-access/TestLockedPanel';
 import './take-test.css';
 import '@/components/shared/zoomable-image.css';
 
@@ -132,6 +139,7 @@ async function callFunction<T>(path: string, method: 'GET' | 'POST', body?: unkn
 
   if (!response.ok) {
     const text = await response.text().catch(() => '');
+    if (response.status === 423) throw new TestAccessLockedError('Test Locked');
     throw new Error(`HTTP ${response.status}: ${text}`);
   }
 
@@ -196,6 +204,7 @@ export function TakeTestContent() {
   const [attemptId, setAttemptId] = useState<string | null>(null);
   const attemptIdRef = useRef<string | null>(null);
   const draftIdRef = useRef<string | null>(null);
+  const startRequestIdRef = useRef<string | null>(null);
   const autoSubmitActive = useRef(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -216,6 +225,10 @@ export function TakeTestContent() {
   const [tabSwitchCount, setTabSwitchCount] = useState(0);
   const tabSwitchCountRef = useRef(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const isSubmittingRef = useRef(false);
+  const [isHardLocked, setIsHardLocked] = useState(false);
+  const hardLockRef = useRef(false);
+  const monitoringCleanupRef = useRef(false);
   const [activeWritingTask, setActiveWritingTask] = useState<1 | 2>(1);
   const [audioPlayed, setAudioPlayed] = useState<Record<number, 'idle' | 'playing' | 'ended'>>({});
   const [listeningUnlockedPart, setListeningUnlockedPart] = useState(1);
@@ -291,20 +304,21 @@ export function TakeTestContent() {
 
   // scheduleAutosave must be declared BEFORE recordViolation since recordViolation calls it
   const scheduleAutosave = useCallback(() => {
-    if (!draftIdRef.current) return;
+    if (!draftIdRef.current || !attemptIdRef.current || hardLockRef.current) return;
     if (autosaveRef.current) clearTimeout(autosaveRef.current);
     autosaveRef.current = setTimeout(() => {
-      const db = getFirestore(firebaseApp);
-      void updateDoc(doc(db, 'testResults', draftIdRef.current!), {
+      if (hardLockRef.current || !attemptIdRef.current || !testId) return;
+      void callFunction('/saveAnswers', 'POST', {
+        testId,
+        attemptId: attemptIdRef.current,
         answers: answersRef.current,
-        lastAutosaveAt: serverTimestamp(),
         antiCheat: {
           violations: violationsRef.current.length,
           tabSwitches: tabSwitchCountRef.current,
         },
       }).catch((err) => console.warn('[take-test autosave]', err));
     }, 500);
-  }, []);
+  }, [testId]);
 
   // ── Monitoring evidence ──────────────────────────────────────────
   // Evidence is always an Entire-screen frame. Webcam video is required for
@@ -360,11 +374,18 @@ export function TakeTestContent() {
       lastLiveAt: liveFrame ? undefined : frame.capturedAt,
     });
 
-    try {
-      await uploadBytes(ref(firebaseStorage, storagePath), frame.blob, { contentType: 'image/jpeg' });
-      console.log('[monitoring-evidence] uploaded:', storagePath);
-    } catch (err) {
-      console.warn('[monitoring-evidence] upload failed', err);
+    for (let uploadAttempt = 1; uploadAttempt <= 3; uploadAttempt += 1) {
+      try {
+        await uploadBytes(ref(firebaseStorage, storagePath), frame.blob, { contentType: 'image/jpeg' });
+        console.log('[monitoring-evidence] uploaded:', storagePath);
+        return;
+      } catch (err) {
+        if (uploadAttempt === 3) {
+          console.warn('[monitoring-evidence] upload failed after retries', err);
+          return;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, uploadAttempt * 500));
+      }
     }
   }, [captureLiveScreenFrame]);
 
@@ -420,6 +441,41 @@ export function TakeTestContent() {
     listeningGapTimeoutRef.current = null;
   }, []);
 
+  const triggerHardLock = useCallback((type: string, description: string) => {
+    const attemptId = attemptIdRef.current;
+    if (!user || !attemptId || !shouldHardLockMonitoringViolation({
+      violation: type,
+      attemptActive: isStartedRef.current,
+      submitting: isSubmittingRef.current,
+      monitoringCleanup: monitoringCleanupRef.current,
+    })) return false;
+    if (hardLockRef.current) return true;
+
+    hardLockRef.current = true;
+    setIsHardLocked(true);
+    isPausedRef.current = true;
+    setIsPaused(false);
+    stopTimer();
+    stopHeartbeat();
+    clearListeningGapTimers();
+    if (autosaveRef.current) clearTimeout(autosaveRef.current);
+    recordViolation(type, description);
+    isStartedRef.current = false;
+    setIsStarted(false);
+
+    const incident = {
+      testId,
+      attemptId,
+      studentUid: user.uid,
+      reason: 'screen_sharing_stopped' as const,
+    };
+    rememberPendingHardLock(incident);
+    void hardLockAttempt(incident)
+      .then(() => clearPendingHardLock(testId, user.uid))
+      .catch((err) => console.warn('[take-test hard-lock] backend retry pending', err));
+    return true;
+  }, [clearListeningGapTimers, recordViolation, stopHeartbeat, stopTimer, testId, user]);
+
   const handleCameraMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (e.button !== 0) return; // Only left mouse button
     setIsDraggingCamera(true);
@@ -457,6 +513,7 @@ export function TakeTestContent() {
   }, [isDraggingCamera, handleCameraMouseMove, handleCameraMouseUp]);
 
   const stopMonitoring = useCallback(() => {
+    monitoringCleanupRef.current = true;
     stopTimer();
     stopHeartbeat();
     isStartedRef.current = false;
@@ -593,6 +650,7 @@ export function TakeTestContent() {
         if (screenRequirementLostRef.current) return;
         screenRequirementLostRef.current = true;
         setIsMonitoringReady(false);
+        if (triggerHardLock('screen_sharing_stopped', 'Student stopped screen sharing')) return;
         pauseForMonitoringViolation('screen_sharing_stopped', 'Student stopped screen sharing');
       });
 
@@ -604,7 +662,7 @@ export function TakeTestContent() {
     } catch {
       return false;
     }
-  }, [pauseForMonitoringViolation, showNotification]);
+  }, [pauseForMonitoringViolation, showNotification, triggerHardLock]);
 
   const requestFullscreen = useCallback(async (): Promise<boolean> => {
     try {
@@ -712,9 +770,10 @@ export function TakeTestContent() {
     setError(null);
     setHasTestBegun(false);
 
-    callFunction<TestData>(`/getTest?id=${encodeURIComponent(testId)}`, 'GET')
-      .then((data) => {
-        if (!active) return;
+    const loadTest = async () => {
+      const applyLoadedTest = (data: TestData) => {
+        hardLockRef.current = false;
+        setIsHardLocked(false);
         setTest(data);
         setAudioPlayed({});
         setListeningUnlockedPart(1);
@@ -725,36 +784,67 @@ export function TakeTestContent() {
         const duration = Number(data.metadata?.duration || base);
         remainingRef.current = duration * 60;
         setRemainingSeconds(duration * 60);
-      })
-      .catch(async (err) => {
+      };
+      const pending = getPendingHardLock(testId, user.uid);
+      if (pending) {
+        hardLockRef.current = true;
+        setIsHardLocked(true);
+        setTest(null);
         try {
-          const db = getFirestore(firebaseApp);
-          const snap = await getDoc(doc(db, 'tests', testId));
-          if (!snap.exists()) throw err;
-          if (!active) return;
-          const data = { id: snap.id, ...snap.data() } as TestData;
-          setTest(data);
-          setAudioPlayed({});
-          setListeningUnlockedPart(1);
-          setListeningWaitingPart(null);
-          setListeningGapRemaining(0);
-          clearListeningGapTimers();
-          const base = normalizeSkill(data.skill) === 'listening' ? 35 : 60;
-          const duration = Number(data.metadata?.duration || base);
-          remainingRef.current = duration * 60;
-          setRemainingSeconds(duration * 60);
-        } catch (fallbackErr) {
-          if (active) setError(fallbackErr instanceof Error ? fallbackErr.message : 'Failed to load test.');
+          const result = await hardLockAttempt(pending);
+          clearPendingHardLock(testId, user.uid);
+          if (!result.locked) {
+            const data = await callFunction<TestData>(`/getTest?id=${encodeURIComponent(testId)}`, 'GET');
+            if (active) applyLoadedTest(data);
+          }
+        } catch (err) {
+          console.warn('[take-test hard-lock] pending incident still awaiting backend', err);
+        } finally {
+          if (active) setIsLoading(false);
         }
-      })
-      .finally(() => {
+        return;
+      }
+
+      try {
+        const data = await callFunction<TestData>(`/getTest?id=${encodeURIComponent(testId)}`, 'GET');
+        if (!active) return;
+        applyLoadedTest(data);
+      } catch (err) {
+        if (!active) return;
+        if (err instanceof TestAccessLockedError) {
+          hardLockRef.current = true;
+          setIsHardLocked(true);
+          setTest(null);
+        } else {
+          setError(err instanceof Error ? err.message : 'Failed to load test.');
+        }
+      } finally {
         if (active) setIsLoading(false);
-      });
+      }
+    };
+
+    void loadTest();
 
     return () => {
       active = false;
     };
   }, [clearListeningGapTimers, testId, user]);
+
+  useEffect(() => {
+    if (!user || !testId) return;
+    const retryPendingLock = () => {
+      const pending = getPendingHardLock(testId, user.uid);
+      if (!pending) return;
+      void hardLockAttempt(pending)
+        .then((result) => {
+          clearPendingHardLock(testId, user.uid);
+          if (!result.locked) router.replace('/student/assignments');
+        })
+        .catch((err) => console.warn('[take-test hard-lock] online retry failed', err));
+    };
+    window.addEventListener('online', retryPendingLock);
+    return () => window.removeEventListener('online', retryPendingLock);
+  }, [router, testId, user]);
 
   useEffect(() => {
     if (cameraVideoRef.current && cameraStream) {
@@ -828,12 +918,14 @@ export function TakeTestContent() {
       const screenViolation = getMonitoringViolationType('screen', screenTrack);
       if (screenViolation && !screenRequirementLostRef.current) {
         screenRequirementLostRef.current = true;
-        pauseForMonitoringViolation(screenViolation, 'Entire screen sharing became unavailable during the test');
+        if (!triggerHardLock(screenViolation, 'Student stopped screen sharing')) {
+          pauseForMonitoringViolation(screenViolation, 'Entire screen sharing became unavailable during the test');
+        }
       }
     }, 5000); // poll every 5 seconds
 
     return () => clearInterval(checkInterval);
-  }, [isStarted, pauseForMonitoringViolation]);
+  }, [isStarted, pauseForMonitoringViolation, triggerHardLock]);
 
   useEffect(() => () => {
     stopMonitoring();
@@ -842,6 +934,7 @@ export function TakeTestContent() {
   }, [clearListeningGapTimers, stopMonitoring]);
 
   const setSingleAnswer = (key: string, value: string) => {
+    if (hardLockRef.current) return;
     if (isPausedRef.current) {
       showNotification('warning', 'Please re-share your entire screen before continuing.');
       return;
@@ -851,6 +944,7 @@ export function TakeTestContent() {
   };
 
   const trimAnswer = (key: string) => {
+    if (hardLockRef.current) return;
     const val = answers[key];
     if (val && val !== val.trim()) {
       updateAnswers((current) => ({ ...current, [key]: val.trim() }));
@@ -859,6 +953,7 @@ export function TakeTestContent() {
   };
 
   const setMultipleAnswer = (start: number, requiredCount: number, value: string, checked: boolean) => {
+    if (hardLockRef.current) return;
     if (isPausedRef.current) {
       showNotification('warning', 'Please re-share your entire screen before continuing.');
       return;
@@ -956,23 +1051,38 @@ export function TakeTestContent() {
         return;
       }
 
-      const response = await callFunction<{ attemptId: string }>('/startAttempt', 'POST', {
+      startRequestIdRef.current ||= crypto.randomUUID();
+      const response = await callFunction<{
+        attemptId: string;
+        resultId: string;
+        attemptStartedAt: string;
+        className: string;
+      }>('/startAttempt', 'POST', {
         examId: null,
         testId: test.id,
+        requestId: startRequestIdRef.current,
       });
       attemptIdRef.current = response.attemptId;
+      draftIdRef.current = response.resultId;
       setAttemptId(response.attemptId);
       setIsMonitoringReady(false);
-      await beginTest();
+      await beginTest(response);
     } catch (err) {
       stopMonitoring();
-      showNotification('error', err instanceof Error ? err.message : 'Failed to start test. Please try again.');
+      if (err instanceof TestAccessLockedError) {
+        hardLockRef.current = true;
+        setIsHardLocked(true);
+        setTest(null);
+      } else {
+        showNotification('error', err instanceof Error ? err.message : 'Failed to start test. Please try again.');
+      }
     }
   };
 
   const startTest = async () => {
     if (!test || isInitializingRef.current) return;
 
+    monitoringCleanupRef.current = false;
     isInitializingRef.current = true;
     setIsInitializing(true);
 
@@ -1002,56 +1112,35 @@ export function TakeTestContent() {
     }
   };
 
-  const beginTest = async () => {
+  const beginTest = async (startContext: {
+    attemptId: string;
+    resultId: string;
+    attemptStartedAt: string;
+    className: string;
+  }) => {
     if (!test || !user) return;
 
-    // Create a draft and snapshot the human-readable evidence context once.
-    // The Storage folder must remain understandable even if the student later
-    // moves class or their profile name changes.
-    const db = getFirestore(firebaseApp);
-    const attemptStartedAt = new Date().toISOString();
-    const className = (await fetchStudentClassDisplayName(user.email || '')) || 'Chưa xếp lớp';
-    const draftRef = doc(collection(db, 'testResults'));
+    // The backend owns Attempt creation. The returned context ties every
+    // evidence capture to that immutable Attempt and its readable class name.
+    const className = startContext.className
+      || (await fetchStudentClassDisplayName(user.email || ''))
+      || 'Chưa xếp lớp';
     const evidenceAttempt: EvidenceAttemptPathInput = {
       testName: test.name || 'Untitled test',
       testId: test.id,
       className,
       studentName: user.displayName || user.email?.split('@')[0] || 'Student',
       studentUid: user.uid,
-      attemptId: attemptIdRef.current || draftRef.id,
-      attemptStartedAt,
+      attemptId: startContext.attemptId,
+      attemptStartedAt: startContext.attemptStartedAt,
     };
     evidenceAttemptRef.current = evidenceAttempt;
     evidenceSequenceRef.current = 0;
     lastLiveScreenFrameRef.current = null;
     lastScreenFrameCaptureRef.current = 0;
 
-    try {
-      await setDoc(draftRef, {
-        testId: test.id,
-        testName: test.name || 'Objective Test',
-        testType: test.skill || 'reading',
-        studentEmail: user.email,
-        studentName: user.displayName || user.email?.split('@')[0] || 'Student',
-        studentUid: user.uid,
-        className,
-        attemptId: evidenceAttempt.attemptId,
-        status: 'in_progress',
-        startedAt: serverTimestamp(),
-        answers: {},
-        testOwnerUid: test.ownerUid || null,
-        monitoring: {
-          evidencePath: buildEvidenceAttemptPath(evidenceAttempt),
-          evidenceVersion: 1,
-          className,
-          attemptStartedAt,
-        },
-      });
-      draftIdRef.current = draftRef.id;
-    } catch (err) {
-      console.warn('[take-test] failed to create draft', err);
-    }
-
+    draftIdRef.current = startContext.resultId;
+    monitoringCleanupRef.current = false;
     isStartedRef.current = true;
     setIsStarted(true);
     setHasTestBegun(true);
@@ -1067,7 +1156,7 @@ export function TakeTestContent() {
   };
 
   async function submitTest(auto = false) {
-    if (!test || !user || isSubmitting) return;
+    if (!test || !user || isSubmittingRef.current || hardLockRef.current) return;
     if (!auto) {
       showNotification('warning', 'Submit your test now?', false, 'Submit', () => { void submitTest(true); });
       return;
@@ -1075,11 +1164,14 @@ export function TakeTestContent() {
 
     if (!validateWriting(auto)) return;
     if (!validateMultipleChoiceGroups()) return;
+    if (!attemptIdRef.current) {
+      showNotification('error', 'Attempt not found. Please return to Assignments and start again.');
+      return;
+    }
 
+    isSubmittingRef.current = true;
     setIsSubmitting(true);
     stopTimer();
-
-    const db = getFirestore(firebaseApp);
 
     if (skill !== 'writing') {
       // ── Objective test: auto-grade and save ──────────────────────
@@ -1109,9 +1201,9 @@ export function TakeTestContent() {
       const band = calculateIELTSBand(correctCount, skill);
 
       try {
-        const data = {
-          status: 'completed',
-          completedAt: serverTimestamp(),
+        const response = await callFunction<{ resultId: string }>('/submitAttempt', 'POST', {
+          testId: test.id,
+          attemptId: attemptIdRef.current,
           answers: answersRef.current,
           correctAnswers: correctCount,
           totalQuestions: totalCount,
@@ -1121,28 +1213,21 @@ export function TakeTestContent() {
             violations: violationsRef.current.length,
             tabSwitches: tabSwitchCountRef.current,
           },
-        };
-        const docId = draftIdRef.current
-          ?? (await addDoc(collection(db, 'testResults'), {
-            testId: test.id,
-            testName: test.name || 'Objective Test',
-            testType: skill,
-            studentEmail: user.email,
-            studentName: user.displayName || user.email?.split('@')[0] || 'Student',
-            studentUid: user.uid,
-            startedAt: serverTimestamp(),
-            testOwnerUid: test.ownerUid || null,
-          })).id;
-        await updateDoc(doc(db, 'testResults', docId), data);
+        });
         if (user?.email) invalidateStudentCache(user.email);
         sessionStorage.setItem(`needs_refresh_${user.email}`, '1');
         stopMonitoring();
-        isStartedRef.current = false;
-        router.push(`/student/performance?reviewTestId=${encodeURIComponent(docId)}`);
+        router.push(`/student/performance?reviewTestId=${encodeURIComponent(response.resultId)}`);
       } catch (err) {
-        showNotification('error', err instanceof Error ? err.message : 'Failed to submit test.');
-        startTimer(remainingRef.current);
+        if (err instanceof TestAccessLockedError) {
+          hardLockRef.current = true;
+          setIsHardLocked(true);
+        } else {
+          showNotification('error', err instanceof Error ? err.message : 'Failed to submit test.');
+          startTimer(remainingRef.current);
+        }
       } finally {
+        isSubmittingRef.current = false;
         setIsSubmitting(false);
       }
       return;
@@ -1150,15 +1235,9 @@ export function TakeTestContent() {
 
     // ── Writing: save submission ───────────────────────────────────
     try {
-      const docRef = await addDoc(collection(db, 'testResults'), {
+      const response = await callFunction<{ resultId: string }>('/submitAttempt', 'POST', {
         testId: test.id,
-        testName: test.name || 'Writing Test',
-        testType: 'writing',
-        studentEmail: user.email,
-        studentName: user.displayName || user.email?.split('@')[0] || 'Student',
-        studentUid: user.uid,
-        status: 'pending',
-        completedAt: serverTimestamp(),
+        attemptId: attemptIdRef.current,
         answers: {
           writingTask1: answersRef.current.writingTask1 || '',
           writingTask2: answersRef.current.writingTask2 || '',
@@ -1174,17 +1253,21 @@ export function TakeTestContent() {
           tabSwitches: tabSwitchCountRef.current,
         },
         timeSpent: durationMinutes * 60 - remainingRef.current,
-        testOwnerUid: test.ownerUid || null,
       });
       if (user?.email) invalidateStudentCache(user.email);
       sessionStorage.setItem(`needs_refresh_${user.email}`, '1');
       stopMonitoring();
-      isStartedRef.current = false;
-      router.push(`/student/performance?reviewTestId=${encodeURIComponent(docRef.id)}&fromSubmission=true`);
+      router.push(`/student/performance?reviewTestId=${encodeURIComponent(response.resultId)}&fromSubmission=true`);
     } catch (err) {
-      showNotification('error', err instanceof Error ? err.message : 'Failed to submit test.');
-      startTimer(remainingRef.current);
+      if (err instanceof TestAccessLockedError) {
+        hardLockRef.current = true;
+        setIsHardLocked(true);
+      } else {
+        showNotification('error', err instanceof Error ? err.message : 'Failed to submit test.');
+        startTimer(remainingRef.current);
+      }
     } finally {
+      isSubmittingRef.current = false;
       setIsSubmitting(false);
     }
   }
@@ -1637,6 +1720,10 @@ export function TakeTestContent() {
 
   if (isLoading) {
     return <div className="tt-loading">Loading test...</div>;
+  }
+
+  if (isHardLocked) {
+    return <TestLockedPanel onBack={() => router.replace('/student/assignments')} />;
   }
 
   if (error || !test) {

@@ -11,10 +11,11 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import { firebaseApp } from './firebase';
+import { fetchAssignedTestSummaries, type TestAccessLock } from './test-access';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type AssignmentStatus = 'NOT_DONE' | 'COMPLETED';
+export type AssignmentStatus = 'NOT_DONE' | 'COMPLETED' | 'LOCKED';
 
 export interface Assignment {
   id: string;
@@ -26,6 +27,7 @@ export interface Assignment {
   band?: number;
   lastActivityAt?: Date;
   deadline?: Date; // Optional: if added later
+  accessLock?: TestAccessLock;
 }
 
 // ─── Helpers (mirrors student-dashboard.ts) ───────────────────────────────────
@@ -59,9 +61,9 @@ export async function fetchStudentAssignments(
   const db = getFirestore(firebaseApp);
 
   // 1. Parallel fetch all necessary data
-  const [userSnap, testsSnap, resultsSnap, writingSnap] = await Promise.all([
+  const [userSnap, assignedTests, resultsSnap, writingSnap] = await Promise.all([
     getDoc(doc(db, 'users', studentEmail)).catch(() => null),
-    getDocs(collection(db, 'tests')).catch(() => null),
+    fetchAssignedTestSummaries(),
     getDocs(
       query(
         collection(db, 'testResults'),
@@ -148,9 +150,8 @@ export async function fetchStudentAssignments(
 
   // 4. Build a map of test IDs to their class assignment timestamps
   const testAssignmentTimes = new Map<string, Date>();
-  testsSnap?.docs.forEach(d => {
-    const testId = d.id;
-    const test = d.data();
+  assignedTests.forEach((test) => {
+    const testId = test.id;
     const assignmentTime = extractDate(test.classAssignment?.updatedAt || test.createdAt);
     testAssignmentTimes.set(testId, assignmentTime);
   });
@@ -158,29 +159,8 @@ export async function fetchStudentAssignments(
   // 5. Filter and build assignments list
   const assignments: Assignment[] = [];
 
-  testsSnap?.docs.forEach(d => {
-    const test = d.data();
-    const testId = d.id;
-    
-    // Check access (same logic as student-dashboard.ts)
-    const dist = test.classAssignment?.distribution;
-    let hasAccess = false;
-    if (!dist || dist === 'all') {
-      hasAccess = true;
-    } else if (dist === 'specific') {
-      const selected: string[] = test.classAssignment.selectedClasses ?? [];
-      if (!userClassId) {
-        hasAccess = false;
-      } else {
-        const classDocId = classCodeToId.get(userClassId) ?? userClassId;
-        hasAccess =
-          selected.includes(userClassId) ||
-          selected.includes(classDocId) ||
-          selected.some((s) => classCodeToId.get(s) === classDocId);
-      }
-    }
-
-    if (!hasAccess) return;
+  assignedTests.forEach((test) => {
+    const testId = test.id;
 
     // Determine status
     let status: AssignmentStatus = 'NOT_DONE';
@@ -192,6 +172,7 @@ export async function fetchStudentAssignments(
       band = completions.get(testId)!.band;
       lastActivityAt = completions.get(testId)!.date;
     }
+    if (test.accessLock?.status === 'locked') status = 'LOCKED';
 
     assignments.push({
       id: testId,
@@ -201,6 +182,7 @@ export async function fetchStudentAssignments(
       status,
       band,
       lastActivityAt,
+      accessLock: test.accessLock || undefined,
     });
   });
 

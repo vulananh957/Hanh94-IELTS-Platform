@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { getFirestore, doc, getDoc, updateDoc } from 'firebase/firestore';
+import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
 import { calculateObjectiveScore } from '@/lib/score-calculator';
 import { calculateIELTSBand, matchAnswer } from '@/app/(dashboard)/student/take-test/take-test-utils';
@@ -446,11 +446,8 @@ export function ObjectiveTestDrawer({
         setTotalQuestions(totalQuestions);
         setTotalCorrect(correctAnswers);
 
-        await updateDoc(doc(db, 'testResults', test.id), {
-          ieltsBand: band,
-          correctAnswers,
-          totalQuestions,
-        });
+        // Scores are persisted by the submission backend. The review view only
+        // recomputes them for display and never mutates a completed result.
       } else {
         const allRows = builtSections.flatMap((s) => s.rows);
         setTotalCorrect(allRows.reduce((t, r) => t + r.score, 0));

@@ -1,9 +1,36 @@
 {
+  "functions": {
+    "source": "functions",
+    "predeploy": "npm --prefix functions run build"
+  },
   "firestore": {
     "rules": "firebase/firestore.rules"
   },
   "storage": {
     "rules": "firebase/storage.rules"
+  },
+  "emulators": {
+    "firestore": {
+      "host": "127.0.0.1",
+      "port": 8180,
+      "websocketPort": 9151
+    },
+    "hub": {
+      "host": "127.0.0.1",
+      "port": 4401
+    },
+    "logging": {
+      "host": "127.0.0.1",
+      "port": 4501
+    },
+    "auth": {
+      "host": "127.0.0.1",
+      "port": 9098
+    },
+    "functions": {
+      "host": "127.0.0.1",
+      "port": 5101
+    }
   },
   "hosting": {
     "source": ".",
