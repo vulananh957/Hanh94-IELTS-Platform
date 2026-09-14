@@ -6,9 +6,11 @@ import { getStorage } from 'firebase-admin/storage';
 import type { Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import {
+  canUseMaterialCapability,
   canTransitionAttemptToLocked,
   getAccessLockDocumentId,
   isAssignedToTest,
+  resolveByteRange,
 } from './test-access-policy';
 
 if (getApps().length === 0) initializeApp();
@@ -55,7 +57,7 @@ function setCors(req: Request, res: Response): boolean {
   res.set('Access-Control-Allow-Origin', req.get('origin') || '*');
   res.set('Vary', 'Origin');
   res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, HEAD, OPTIONS');
   if (req.method === 'OPTIONS') {
     res.status(204).send('');
     return true;
@@ -222,17 +224,17 @@ function materialPaths(value: unknown, paths = new Set<string>(), depth = 0): st
   return [...paths];
 }
 
-function replaceMaterialUrls(value: unknown, sessionId: string, materialBase: string, depth = 0): unknown {
+function replaceMaterialUrls(value: unknown, sessionId: string, mediaTicket: string, materialBase: string, depth = 0): unknown {
   if (depth > 12 || value == null) return value;
   if (typeof value === 'string') {
     const path = storagePathFromUrl(value);
-    return path ? materialProxyUrl(materialBase, sessionId, path) : value;
+    return path ? materialProxyUrl(materialBase, sessionId, mediaTicket, path) : value;
   }
-  if (Array.isArray(value)) return value.map((item) => replaceMaterialUrls(item, sessionId, materialBase, depth + 1));
+  if (Array.isArray(value)) return value.map((item) => replaceMaterialUrls(item, sessionId, mediaTicket, materialBase, depth + 1));
   if (typeof value === 'object') {
     return Object.fromEntries(Object.entries(asRecord(value)).map(([key, item]) => [
       key,
-      replaceMaterialUrls(item, sessionId, materialBase, depth + 1),
+      replaceMaterialUrls(item, sessionId, mediaTicket, materialBase, depth + 1),
     ]));
   }
   return value;
@@ -249,8 +251,8 @@ function testMaterialPaths(testData: Record<string, unknown>): string[] {
   return [...paths];
 }
 
-function materialProxyUrl(materialBase: string, sessionId: string, path: string): string {
-  return `${materialBase}/getTestMaterial?session=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`;
+function materialProxyUrl(materialBase: string, sessionId: string, mediaTicket: string, path: string): string {
+  return `${materialBase}/getTestMaterial?session=${encodeURIComponent(sessionId)}&ticket=${encodeURIComponent(mediaTicket)}&path=${encodeURIComponent(path)}`;
 }
 
 function materialBaseForRequest(req: Request): string {
@@ -271,15 +273,17 @@ async function protectStudentTestMaterial(
   const paths = testMaterialPaths(testData);
   if (paths.length === 0) return testData;
   const sessionId = randomUUID();
+  const mediaTicket = randomUUID();
   await db.collection('testMaterialSessions').doc(sessionId).create({
     testId,
     actorUid,
     enforceStudentLock,
+    mediaTicket,
     paths,
     expiresAt: Timestamp.fromMillis(Date.now() + 15 * 60_000),
     createdAt: FieldValue.serverTimestamp(),
   });
-  return replaceMaterialUrls(testData, sessionId, materialBase) as Record<string, unknown>;
+  return replaceMaterialUrls(testData, sessionId, mediaTicket, materialBase) as Record<string, unknown>;
 }
 
 async function revokeTestMaterialTokens(testId: string): Promise<boolean> {
@@ -360,33 +364,57 @@ export const getTest = onHttp(async (req, res, auth) => {
   });
 });
 
-// Browser media elements cannot attach an Authorization header. A short-lived,
-// opaque session preserves that constraint while this endpoint re-checks the
-// lock for every request, including a copied media URL after the test is locked.
+// Browser media elements cannot attach an Authorization header. The short-lived
+// session plus per-session opaque ticket lets them stream without exposing an
+// ID token, while every request still re-checks the student's current lock.
 export const getTestMaterial = region.https.onRequest(async (req, res) => {
   if (setCors(req, res)) return;
   try {
-    const auth = await authenticate(req);
     const sessionId = text(req.query.session);
+    const ticket = text(req.query.ticket);
     const path = text(req.query.path);
-    if (!sessionId || !path) throw new HttpError(400, 'Missing material context.');
+    if (!sessionId || !ticket || !path) throw new HttpError(400, 'Missing material context.');
     const sessionSnap = await db.collection('testMaterialSessions').doc(sessionId).get();
     if (!sessionSnap.exists) throw new HttpError(404, 'Material session not found.');
     const session = sessionSnap.data() || {};
     const expiresAt = session.expiresAt instanceof Timestamp ? session.expiresAt.toMillis() : 0;
     const testId = text(session.testId);
     const actorUid = text(session.actorUid);
-    const allowedPaths = Array.isArray(session.paths) ? session.paths.map(text) : [];
-    if (!testId || !actorUid || expiresAt <= Date.now() || !allowedPaths.includes(path)) {
+    const mediaTicket = text(session.mediaTicket);
+    if (!testId || !actorUid || !canUseMaterialCapability({
+      expectedTicket: mediaTicket,
+      presentedTicket: ticket,
+      expiresAtMs: expiresAt,
+      nowMs: Date.now(),
+      allowedPaths: session.paths,
+      requestedPath: path,
+    })) {
       throw new HttpError(403, 'Material access denied.');
     }
-    if (auth.decoded.uid !== actorUid) throw new HttpError(403, 'Material access denied.');
     if (session.enforceStudentLock === true) await assertUnlocked(testId, actorUid);
     const file = storage.bucket().file(path);
     const [metadata] = await file.getMetadata();
+    const totalSize = Number(metadata.size);
+    if (!Number.isSafeInteger(totalSize) || totalSize < 0) throw new HttpError(404, 'Material not found.');
+    const requestedRange = text(req.get('range'));
+    const resolvedRange = resolveByteRange(totalSize, requestedRange);
+    if (!resolvedRange) {
+      res.status(416).set('Content-Range', `bytes */${totalSize}`).end();
+      return;
+    }
+    const { start, end, partial } = resolvedRange;
+    const contentLength = totalSize === 0 ? 0 : end - start + 1;
     res.set('Content-Type', String(metadata.contentType || 'application/octet-stream'));
     res.set('Cache-Control', 'private, no-store');
-    file.createReadStream()
+    res.set('Accept-Ranges', 'bytes');
+    res.set('Referrer-Policy', 'no-referrer');
+    res.set('Content-Length', String(contentLength));
+    if (partial) res.status(206).set('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    file.createReadStream({ start, end })
       .on('error', (error) => {
         console.error('[test-access] material stream failed', error);
         if (!res.headersSent) res.status(404).json({ ok: false, error: 'Material not found.' });

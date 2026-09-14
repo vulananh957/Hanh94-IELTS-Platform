@@ -10,6 +10,7 @@ import {
   clearPendingHardLock,
   fetchAccessibleTest,
   getPendingHardLock,
+  hydrateProtectedMaterialUrls,
   rememberPendingHardLock,
   requestTestAccess,
 } from './test-access';
@@ -71,5 +72,15 @@ describe('test access client', () => {
       },
     });
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns streamable preview media without downloading complete blobs first', async () => {
+    const getIdToken = vi.fn().mockResolvedValue('token');
+    getAuthMock.mockReturnValue({ currentUser: { getIdToken } });
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise<Response>(() => undefined)));
+
+    const mediaUrl = 'https://example.test/getTestMaterial?session=session-1&path=tests%2Ftest-1%2Faudio.mp3';
+    await expect(hydrateProtectedMaterialUrls([mediaUrl], { stream: true })).resolves.toEqual([mediaUrl]);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

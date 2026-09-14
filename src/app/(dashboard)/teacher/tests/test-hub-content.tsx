@@ -647,6 +647,7 @@ export function TestHubContent() {
 
         const resolveMaterialList = (items: unknown): Promise<string[]> => hydrateProtectedMaterialUrls(
           (Array.isArray(items) ? items : []).filter((item): item is string => typeof item === 'string'),
+          { stream: true },
         );
 
         const [writingTask1, writingTask2, reading, listening] = await Promise.all([

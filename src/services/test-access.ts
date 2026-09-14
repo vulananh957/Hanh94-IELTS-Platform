@@ -166,7 +166,11 @@ async function hydrateProtectedMaterial(value: unknown, accessToken: string): Pr
   return value;
 }
 
-export async function hydrateProtectedMaterialUrls(urls: string[]): Promise<string[]> {
+export async function hydrateProtectedMaterialUrls(
+  urls: string[],
+  options: { stream?: boolean } = {},
+): Promise<string[]> {
+  if (options.stream) return urls;
   if (!urls.some(isProtectedMaterialUrl)) return urls;
   const accessToken = await token();
   return Promise.all(urls.map((url) => (
