@@ -5,6 +5,7 @@ import {
   getMonitoringViolationType,
   isEntireScreenShare,
   shouldHardLockMonitoringViolation,
+  waitForVerifiedEntireScreenShare,
 } from './monitoring-recovery';
 
 describe('getMonitoringRecoveryStep', () => {
@@ -117,6 +118,25 @@ describe('getMonitoringRecoveryStep', () => {
 });
 
 describe('monitoring requirement validation', () => {
+  it('waits for Chrome to expose entire-screen metadata after the share picker closes', async () => {
+    let reads = 0;
+    const track = {
+      getSettings: vi.fn(() => ({ displaySurface: reads++ === 0 ? undefined : 'monitor' })),
+    };
+
+    await expect(waitForVerifiedEntireScreenShare(track, 0)).resolves.toBe(true);
+    expect(track.getSettings).toHaveBeenCalledTimes(2);
+  });
+
+  it('still rejects sharing when the delayed metadata is not entire screen', async () => {
+    const track = {
+      getSettings: vi.fn(() => ({ displaySurface: 'window' })),
+    };
+
+    await expect(waitForVerifiedEntireScreenShare(track, 0)).resolves.toBe(false);
+    expect(track.getSettings).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     ['monitor', true],
     ['window', false],

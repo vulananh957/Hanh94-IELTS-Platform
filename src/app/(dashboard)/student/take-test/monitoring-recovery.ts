@@ -44,6 +44,27 @@ export function isEntireScreenShare(displaySurface: string | undefined): boolean
   return displaySurface === 'monitor';
 }
 
+type DisplaySurfaceTrack = {
+  getSettings?: () => { displaySurface?: string };
+};
+
+/**
+ * Chromium can resolve getDisplayMedia before it exposes displaySurface on the
+ * new track. Keep the verification strict, but re-read the metadata once on
+ * the next short turn before treating an otherwise valid entire-screen share
+ * as a rejected setup.
+ */
+export async function waitForVerifiedEntireScreenShare(
+  track: DisplaySurfaceTrack | undefined,
+  retryDelayMs = 300,
+): Promise<boolean> {
+  const displaySurface = track?.getSettings?.().displaySurface;
+  if (isEntireScreenShare(displaySurface)) return true;
+
+  await new Promise<void>((resolve) => window.setTimeout(resolve, retryDelayMs));
+  return isEntireScreenShare(track?.getSettings?.().displaySurface);
+}
+
 export function getMonitoringViolationType(
   source: MonitoringSource,
   track: MonitoringTrackState | undefined,

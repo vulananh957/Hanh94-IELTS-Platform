@@ -28,9 +28,9 @@ import {
   ensureMonitoringStreams,
   getMonitoringRecoveryStep,
   getMonitoringViolationType,
-  isEntireScreenShare,
   isLiveMonitoringTrack,
   shouldHardLockMonitoringViolation,
+  waitForVerifiedEntireScreenShare,
 } from './monitoring-recovery';
 import {
   callTestAccess as callFunction,
@@ -617,12 +617,11 @@ export function TakeTestContent() {
         monitorTypeSurfaces: 'include',
       });
       const [track] = stream.getVideoTracks();
-      const settings = track?.getSettings?.() || {};
-      const displaySurface = (settings as MediaTrackSettings & { displaySurface?: string }).displaySurface;
 
       // Evidence is valid only when the browser explicitly confirms that the
-      // student shared their entire display.
-      if (!isEntireScreenShare(displaySurface)) {
+      // student shared their entire display. Chromium can expose this setting
+      // just after the chooser closes, so verify it again after a short delay.
+      if (!await waitForVerifiedEntireScreenShare(track)) {
         stream.getTracks().forEach((item) => item.stop());
         showNotification('warning', 'Please choose Entire screen in a browser that supports screen verification.');
         return false;
