@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   activateScreenSharePreview,
   ensureMonitoringStreams,
+  getScreenShareVerificationStatus,
   getMonitoringRecoveryStep,
   getMonitoringViolationType,
   isEntireScreenShare,
@@ -119,6 +120,15 @@ describe('getMonitoringRecoveryStep', () => {
 });
 
 describe('monitoring requirement validation', () => {
+  it.each([
+    ['monitor', 'verified'],
+    ['window', 'not_entire_screen'],
+    ['browser', 'not_entire_screen'],
+    [undefined, 'pending'],
+  ] as const)('classifies displaySurface=%s as %s', (surface, expected) => {
+    expect(getScreenShareVerificationStatus(surface)).toBe(expected);
+  });
+
   it('activates the screen preview before checking the selected display', async () => {
     const stream = { id: 'screen-stream' };
     const preview = {
@@ -132,6 +142,16 @@ describe('monitoring requirement validation', () => {
     expect(preview.play).toHaveBeenCalledTimes(1);
   });
 
+  it('does not block verification while a hidden preview is still starting', () => {
+    const preview = {
+      srcObject: null as unknown,
+      play: vi.fn(() => new Promise<void>(() => undefined)),
+    };
+
+    expect(activateScreenSharePreview(preview, { id: 'screen-stream' })).toBeUndefined();
+    expect(preview.play).toHaveBeenCalledTimes(1);
+  });
+
   it('waits for Chrome to expose entire-screen metadata after the share picker closes', async () => {
     let reads = 0;
     const track = {
@@ -142,13 +162,23 @@ describe('monitoring requirement validation', () => {
     expect(track.getSettings).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps checking an unknown surface until Chrome confirms Entire screen', async () => {
+    let reads = 0;
+    const track = {
+      getSettings: vi.fn(() => ({ displaySurface: ++reads < 3 ? undefined : 'monitor' })),
+    };
+
+    await expect(waitForVerifiedEntireScreenShare(track, 2, 0)).resolves.toBe(true);
+    expect(track.getSettings).toHaveBeenCalledTimes(3);
+  });
+
   it('still rejects sharing when the delayed metadata is not entire screen', async () => {
     const track = {
       getSettings: vi.fn(() => ({ displaySurface: 'window' })),
     };
 
     await expect(waitForVerifiedEntireScreenShare(track, 0)).resolves.toBe(false);
-    expect(track.getSettings).toHaveBeenCalledTimes(2);
+    expect(track.getSettings).toHaveBeenCalledTimes(1);
   });
 
   it.each([

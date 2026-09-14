@@ -28,6 +28,7 @@ import {
   activateScreenSharePreview,
   ensureMonitoringStreams,
   getMonitoringRecoveryStep,
+  getScreenShareVerificationStatus,
   getMonitoringViolationType,
   isLiveMonitoringTrack,
   shouldHardLockMonitoringViolation,
@@ -232,6 +233,8 @@ export function TakeTestContent() {
   // Keep refs to latest streams so interval callbacks always access current values
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  const pendingScreenStreamRef = useRef<MediaStream | null>(null);
+  const screenSetupMessageRef = useRef<string | null>(null);
 
   const skill = normalizeSkill(test?.skill);
   const durationMinutes = useMemo(() => {
@@ -513,6 +516,9 @@ export function TakeTestContent() {
 
     screenStreamRef.current?.getTracks().forEach((track) => track.stop());
     screenStreamRef.current = null;
+    pendingScreenStreamRef.current?.getTracks().forEach((track) => track.stop());
+    pendingScreenStreamRef.current = null;
+    screenSetupMessageRef.current = null;
     setScreenStream(null);
 
     cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -605,7 +611,57 @@ export function TakeTestContent() {
     const existingTrack = screenStreamRef.current?.getVideoTracks()[0];
     if (isLiveMonitoringTrack(existingTrack)) return true;
 
+    const acceptVerifiedStream = (stream: MediaStream, track: MediaStreamTrack | undefined) => {
+      track?.addEventListener('ended', () => {
+        if (screenStreamRef.current?.getVideoTracks()[0] !== track) return;
+        if (screenRequirementLostRef.current) return;
+        screenRequirementLostRef.current = true;
+        setIsMonitoringReady(false);
+        if (triggerHardLock('screen_sharing_stopped', 'Student stopped screen sharing')) return;
+        pauseForMonitoringViolation('screen_sharing_stopped', 'Student stopped screen sharing');
+      });
+
+      pendingScreenStreamRef.current = null;
+      screenSetupMessageRef.current = null;
+      screenRequirementLostRef.current = false;
+      screenStreamRef.current = stream;
+      setScreenStream(stream);
+    };
+
+    const verifySelectedStream = async (stream: MediaStream): Promise<boolean> => {
+      const [track] = stream.getVideoTracks();
+      if (!track || track.readyState === 'ended') {
+        pendingScreenStreamRef.current = null;
+        screenSetupMessageRef.current = 'Screen sharing ended before it could be verified. Please choose Entire screen and try again.';
+        return false;
+      }
+      activateScreenSharePreview(screenVideoRef.current, stream);
+
+      if (await waitForVerifiedEntireScreenShare(track)) {
+        acceptVerifiedStream(stream, track);
+        return true;
+      }
+
+      const status = getScreenShareVerificationStatus(track?.getSettings?.().displaySurface);
+      if (status === 'pending') {
+        // Do not terminate a user-selected stream merely because Chromium has
+        // not exposed its surface metadata yet. A later setup click rechecks
+        // this same stream; it can never start an Attempt until verified.
+        pendingScreenStreamRef.current = stream;
+        screenSetupMessageRef.current = 'Screen sharing is active, but Chrome is still confirming Entire screen. Keep sharing and try again in a moment.';
+        return false;
+      }
+
+      stream.getTracks().forEach((item) => item.stop());
+      pendingScreenStreamRef.current = null;
+      screenSetupMessageRef.current = 'Please choose Entire screen in a browser that supports screen verification.';
+      return false;
+    };
+
     try {
+      const pendingStream = pendingScreenStreamRef.current;
+      if (pendingStream) return await verifySelectedStream(pendingStream);
+
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           cursor: 'always',
@@ -617,39 +673,12 @@ export function TakeTestContent() {
         surfaceSwitching: 'include',
         monitorTypeSurfaces: 'include',
       });
-      const [track] = stream.getVideoTracks();
-
-      // Attach the muted preview before checking display metadata. Some
-      // Chromium/macOS sessions only finalize that metadata once playback has
-      // a consumer, even after the student chose Entire screen.
-      await activateScreenSharePreview(screenVideoRef.current, stream);
-
-      // Evidence is valid only when the browser explicitly confirms that the
-      // student shared their entire display. Chromium can expose this setting
-      // just after the chooser closes, so verify it again after a short delay.
-      if (!await waitForVerifiedEntireScreenShare(track)) {
-        stream.getTracks().forEach((item) => item.stop());
-        showNotification('warning', 'Please choose Entire screen in a browser that supports screen verification.');
-        return false;
-      }
-
-      track?.addEventListener('ended', () => {
-        if (screenStreamRef.current?.getVideoTracks()[0] !== track) return;
-        if (screenRequirementLostRef.current) return;
-        screenRequirementLostRef.current = true;
-        setIsMonitoringReady(false);
-        if (triggerHardLock('screen_sharing_stopped', 'Student stopped screen sharing')) return;
-        pauseForMonitoringViolation('screen_sharing_stopped', 'Student stopped screen sharing');
-      });
-
-      screenRequirementLostRef.current = false;
-      screenStreamRef.current = stream;
-      setScreenStream(stream);
-      return true;
+      return await verifySelectedStream(stream);
     } catch {
+      screenSetupMessageRef.current = 'Screen sharing was not started. Please choose Entire screen and try again.';
       return false;
     }
-  }, [pauseForMonitoringViolation, showNotification, triggerHardLock]);
+  }, [pauseForMonitoringViolation, triggerHardLock]);
 
   const requestFullscreen = useCallback(async (): Promise<boolean> => {
     try {
@@ -682,7 +711,7 @@ export function TakeTestContent() {
           'error',
           result.missing === 'camera'
             ? 'Camera access is required to continue the test.'
-            : 'Entire screen sharing is required to continue the test.',
+            : screenSetupMessageRef.current || 'Entire screen sharing is required to continue the test.',
         );
         return;
       }
@@ -1098,7 +1127,7 @@ export function TakeTestContent() {
           'error',
           result.missing === 'camera'
             ? 'Camera access is required to take this test.'
-            : 'Entire screen sharing is required to take this test.',
+            : screenSetupMessageRef.current || 'Entire screen sharing is required to take this test.',
         );
         return;
       }

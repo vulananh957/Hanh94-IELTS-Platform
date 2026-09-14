@@ -44,6 +44,15 @@ export function isEntireScreenShare(displaySurface: string | undefined): boolean
   return displaySurface === 'monitor';
 }
 
+export type ScreenShareVerificationStatus = 'verified' | 'not_entire_screen' | 'pending';
+
+export function getScreenShareVerificationStatus(
+  displaySurface: string | undefined,
+): ScreenShareVerificationStatus {
+  if (isEntireScreenShare(displaySurface)) return 'verified';
+  return displaySurface === undefined ? 'pending' : 'not_entire_screen';
+}
+
 type DisplaySurfaceTrack = {
   getSettings?: () => { displaySurface?: string };
 };
@@ -58,30 +67,44 @@ type ScreenSharePreview = {
  * the display track can remain in its startup state until a consumer is
  * attached, even though the user has already selected Entire screen.
  */
-export async function activateScreenSharePreview(
+export function activateScreenSharePreview(
   preview: ScreenSharePreview | null,
   stream: unknown,
-): Promise<void> {
+): void {
   if (!preview) return;
   preview.srcObject = stream;
-  await preview.play?.().catch(() => undefined);
+  // A hidden video can take an unbounded time to resolve play() in some
+  // Chromium/macOS sessions. It is only a consumer for the track, not a
+  // prerequisite for the security check, so never block setup on it.
+  void preview.play?.().catch(() => undefined);
 }
 
 /**
  * Chromium can resolve getDisplayMedia before it exposes displaySurface on the
- * new track. Keep the verification strict, but re-read the metadata once on
- * the next short turn before treating an otherwise valid entire-screen share
- * as a rejected setup.
+ * new track. Keep the verification strict, but poll briefly before treating
+ * an otherwise valid entire-screen share as a rejected setup.
  */
 export async function waitForVerifiedEntireScreenShare(
   track: DisplaySurfaceTrack | undefined,
-  retryDelayMs = 300,
+  verificationWindowMs = 3000,
+  pollIntervalMs = 100,
 ): Promise<boolean> {
-  const displaySurface = track?.getSettings?.().displaySurface;
-  if (isEntireScreenShare(displaySurface)) return true;
+  const attempts = Math.max(
+    2,
+    Math.ceil(Math.max(0, verificationWindowMs) / Math.max(1, pollIntervalMs)) + 1,
+  );
 
-  await new Promise<void>((resolve) => window.setTimeout(resolve, retryDelayMs));
-  return isEntireScreenShare(track?.getSettings?.().displaySurface);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const status = getScreenShareVerificationStatus(track?.getSettings?.().displaySurface);
+    if (status === 'verified') return true;
+    if (status === 'not_entire_screen') return false;
+
+    if (attempt < attempts - 1) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, pollIntervalMs));
+    }
+  }
+
+  return false;
 }
 
 export function getMonitoringViolationType(
