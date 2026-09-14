@@ -645,29 +645,10 @@ export function TakeTestContent() {
       const pendingStream = pendingScreenStreamRef.current;
       if (pendingStream) return await verifySelectedStream(pendingStream);
 
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getDisplayMedia({
-          video: {
-            cursor: 'always',
-            displaySurface: 'monitor',
-          } as MediaTrackConstraints,
-          audio: false,
-          // @ts-expect-error - Chromium display surface preference hints
-          selfBrowserSurface: 'exclude',
-          surfaceSwitching: 'include',
-          monitorTypeSurfaces: 'include',
-        });
-      } catch (advancedErr: unknown) {
-        console.warn('[screen share] advanced constraints failed, falling back to basic getDisplayMedia', advancedErr);
-        if ((advancedErr as Error)?.name === 'NotAllowedError') {
-          throw advancedErr;
-        }
-        stream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: false,
-        });
-      }
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { cursor: 'always' } as MediaTrackConstraints,
+        audio: false,
+      });
       return await verifySelectedStream(stream);
     } catch (err: unknown) {
       console.error('[screen share error]', err);
