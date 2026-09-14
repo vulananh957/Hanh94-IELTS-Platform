@@ -645,20 +645,38 @@ export function TakeTestContent() {
       const pendingStream = pendingScreenStreamRef.current;
       if (pendingStream) return await verifySelectedStream(pendingStream);
 
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          cursor: 'always',
-          displaySurface: 'monitor',
-        } as MediaTrackConstraints,
-        audio: false,
-        // @ts-expect-error - Chromium display surface preference hints
-        selfBrowserSurface: 'exclude',
-        surfaceSwitching: 'include',
-        monitorTypeSurfaces: 'include',
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            cursor: 'always',
+            displaySurface: 'monitor',
+          } as MediaTrackConstraints,
+          audio: false,
+          // @ts-expect-error - Chromium display surface preference hints
+          selfBrowserSurface: 'exclude',
+          surfaceSwitching: 'include',
+          monitorTypeSurfaces: 'include',
+        });
+      } catch (advancedErr: unknown) {
+        console.warn('[screen share] advanced constraints failed, falling back to basic getDisplayMedia', advancedErr);
+        if ((advancedErr as Error)?.name === 'NotAllowedError') {
+          throw advancedErr;
+        }
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: false,
+        });
+      }
       return await verifySelectedStream(stream);
-    } catch {
-      screenSetupMessageRef.current = 'Screen sharing was not started. Please choose Entire screen and try again.';
+    } catch (err: unknown) {
+      console.error('[screen share error]', err);
+      const errorName = (err as Error)?.name;
+      if (errorName === 'NotAllowedError') {
+        screenSetupMessageRef.current = 'Quyền chia sẻ màn hình bị từ chối hoặc macOS chưa cấp quyền. Trên máy Mac, vui lòng vào Cài đặt hệ thống > Quyền riêng tư & Bảo mật > Ghi màn hình (Screen Recording) > Bật Google Chrome và khởi động lại trình duyệt.';
+      } else {
+        screenSetupMessageRef.current = 'Không thể khởi động chia sẻ màn hình. Vui lòng cấp quyền chia sẻ màn hình và thử lại.';
+      }
       return false;
     }
   }, [pauseForMonitoringViolation, triggerHardLock]);
