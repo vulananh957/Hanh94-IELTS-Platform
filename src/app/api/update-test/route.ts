@@ -4,6 +4,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { firebaseAdminApp } from '@/services/firebase-admin';
 import { generateAnswerKey } from '@/features/upload-test/lib/answer-key';
 import { calculateObjectiveScore } from '@/lib/score-calculator';
+import { buildClassAssignmentWithOpenedTimes } from '@/lib/class-assignment-timing';
 import type { TestPart } from '@/features/upload-test/types';
 import type { ObjectiveSkill } from '@/lib/score-calculator';
 
@@ -84,17 +85,20 @@ export async function POST(request: NextRequest) {
 
     // 2. Update the test document
     const testRef = db.collection('tests').doc(body.testId);
+    const currentTest = await testRef.get();
+    const now = new Date();
     await testRef.set({
       name: body.testName || 'Untitled Test',
       skill: body.skill,
       metadata: { parts },
       files: body.files || {},
       answerKey,
-      classAssignment: {
-        ...body.classAssignment || { distribution: 'all', selectedClasses: [] },
-        updatedAt: new Date(),
-      },
-      updatedAt: new Date(),
+      classAssignment: buildClassAssignmentWithOpenedTimes(
+        currentTest.data()?.classAssignment,
+        body.classAssignment || { distribution: 'all', selectedClasses: [] },
+        now,
+      ),
+      updatedAt: now,
     }, { merge: true });
 
     // 3. Recalculate scores for all existing testResults

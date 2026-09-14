@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { firebaseApp } from '@/services/firebase';
-import { clearAuthState } from '@/services/auth';
+import { signOutUser } from '@/services/auth';
 import {
   fetchStudentDashboard,
   fetchStudentRecentActivity,
@@ -314,10 +314,13 @@ export function StudentDashboardContent() {
   }, [sidebarOpen]);
 
   const handleLogout = async () => {
-    if (!confirm('Are you sure you want to logout?')) return;
-    try { await signOut(auth); } catch { /* continue */ }
-    clearAuthState();
-    router.push('/login');
+    if (!window.confirm('Are you sure you want to logout?')) return;
+    try {
+      await signOutUser();
+      router.replace('/login');
+    } catch {
+      window.alert('Unable to sign out. Please try again.');
+    }
   };
 
   const userInitials = useMemo(() => {

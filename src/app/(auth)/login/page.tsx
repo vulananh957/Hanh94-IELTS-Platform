@@ -4,149 +4,66 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  getRedirectResultIfAny,
-  clearAuthState,
-  getStoredAuth,
-  hasPendingAuthRedirect,
-  handleGoogleSignIn,
-  isAuthRedirectInProgressError,
-  isManagedUserDisabled,
-  processAuthenticatedUser,
-  redirectPathByRole,
+  auth, clearAuthState, getRedirectResultIfAny, getAuthErrorMessage, handleGoogleSignIn,
+  isAuthRedirectInProgressError, processAuthenticatedUser, redirectPathByRole, signOutUser,
   type MessageType,
 } from '@/services/auth';
+import type { User } from 'firebase/auth';
 
-type ToastState = {
-  text: string;
-  type: MessageType;
-};
+type Phase = 'restoring' | 'idle' | 'signingIn' | 'verifying' | 'redirecting';
 
 export default function LoginPage() {
   const router = useRouter();
-  const cardRef = useRef<HTMLDivElement | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [toast, setToast] = useState<ToastState | null>(null);
+  const [phase, setPhase] = useState<Phase>('restoring');
+  const [toast, setToast] = useState<{ text: string; type: MessageType } | null>(null);
+  const busy = useRef(false);
+  const mounted = useRef(false);
+  const navigated = useRef(false);
 
-  const showToast = useCallback((text: string, type: MessageType = 'info') => {
-    setToast({ text, type });
-    window.setTimeout(() => setToast(null), 3000);
-  }, []);
-
-  const redirectByRole = useCallback(
-    (role: 'teacher' | 'student' | 'testCreator') => {
-      router.replace(redirectPathByRole(role));
-    },
-    [router]
-  );
-
-  const signIn = useCallback(async () => {
-    if (isSubmitting) return;
-    setIsSubmitting(true);
-
-    try {
-      const user = await handleGoogleSignIn();
-      const role = await processAuthenticatedUser(user);
-      redirectByRole(role);
-    } catch (error) {
-      if (isAuthRedirectInProgressError(error)) {
-        return;
-      }
-
-      const message = error instanceof Error ? error.message : 'Login failed. Please try again.';
-      showToast(message, 'error');
-      setIsSubmitting(false);
-    }
-  }, [isSubmitting, redirectByRole, showToast]);
+  const completeSignIn = useCallback(async (user: User, isActive: () => boolean) => {
+    if (!isActive()) return;
+    setPhase('verifying');
+    const role = await processAuthenticatedUser(user);
+    if (!isActive() || auth.currentUser !== user || navigated.current) return;
+    navigated.current = true;
+    setPhase('redirecting');
+    router.replace(redirectPathByRole(role));
+  }, [router]);
 
   useEffect(() => {
-    router.prefetch('/student');
-    router.prefetch('/teacher');
-    router.prefetch('/creator');
-
+    mounted.current = true;
     let active = true;
-
-    const resolveInitialAuth = async () => {
-      const blockedEmail = localStorage.getItem('blockedUser');
-      if (blockedEmail) {
-        if (active) {
-          showToast('Your account has been blocked due to repeated violations. Please contact admin for support.', 'error');
-          router.replace('/');
-        }
-        return;
-      }
-
-      const hasPendingRedirect = hasPendingAuthRedirect();
-      if (hasPendingRedirect && active) {
-        setIsSubmitting(true);
-      }
-
+    void (async () => {
       try {
-        const redirectUser = await getRedirectResultIfAny({
-          waitForCurrentUser: hasPendingRedirect,
-          timeoutMs: 10000,
-        });
-
+        const user = await getRedirectResultIfAny();
         if (!active) return;
-
-        if (redirectUser) {
-          const role = await processAuthenticatedUser(redirectUser);
-          if (active) redirectByRole(role);
-          return;
-        }
-
-        const stored = getStoredAuth();
-        if (stored?.user?.email && await isManagedUserDisabled(stored.user.email)) {
-          clearAuthState();
-          if (active) {
-            showToast('Your account has been disabled. Please contact administrator.', 'error');
-          }
-          return;
-        }
-
-        if (stored?.user && stored.role) {
-          redirectByRole(stored.role);
-        }
-      } catch {
-        if (active && hasPendingRedirect) {
-          showToast('Login failed. Please try again.', 'error');
-        }
-      } finally {
-        if (active) {
-          setIsSubmitting(false);
-        }
+        if (user) await completeSignIn(user, () => active);
+        else { clearAuthState(); setPhase('idle'); }
+      } catch (error) {
+        if (!active) return;
+        setToast({ text: getAuthErrorMessage(error), type: 'error' });
+        setPhase('idle');
       }
-    };
+    })();
+    return () => { active = false; mounted.current = false; };
+  }, [completeSignIn]);
 
-    void resolveInitialAuth();
-
-    const onMouseMove = (e: MouseEvent) => {
-      const card = cardRef.current;
-      if (!card) return;
-      const rect = card.getBoundingClientRect();
-      const x = e.clientX - rect.left - rect.width / 2;
-      const y = e.clientY - rect.top - rect.height / 2;
-      const rotateX = (y / rect.height) * 5;
-      const rotateY = (x / rect.width) * -5;
-      card.style.transform = `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`;
-    };
-
-    const onMouseLeave = () => {
-      const card = cardRef.current;
-      if (!card) return;
-      card.style.transform = 'perspective(1000px) rotateX(0deg) rotateY(0deg)';
-    };
-
-    const currentCard = cardRef.current;
-
-    document.addEventListener('mousemove', onMouseMove);
-    currentCard?.addEventListener('mouseleave', onMouseLeave);
-
-    return () => {
-      active = false;
-      document.removeEventListener('mousemove', onMouseMove);
-      currentCard?.removeEventListener('mouseleave', onMouseLeave);
-    };
-  }, [redirectByRole, router, showToast]);
+  const signIn = useCallback(async () => {
+    if (busy.current || phase !== 'idle') return;
+    busy.current = true;
+    setToast(null);
+    setPhase(auth.currentUser ? 'verifying' : 'signingIn');
+    try {
+      const user = auth.currentUser ?? await handleGoogleSignIn();
+      await completeSignIn(user, () => mounted.current);
+    } catch (error) {
+      if (!mounted.current || isAuthRedirectInProgressError(error)) return;
+      setToast({ text: getAuthErrorMessage(error), type: 'error' });
+      setPhase('idle');
+    } finally {
+      busy.current = false;
+    }
+  }, [phase, completeSignIn]);
 
   return (
     <div className="login-page">
@@ -162,7 +79,7 @@ export default function LoginPage() {
       ) : null}
 
       <div className="login-container">
-        <div className="login-card" ref={cardRef}>
+        <div className="login-card">
           <div className="login-logo">
             <i className="fas fa-graduation-cap" />
           </div>
@@ -172,15 +89,22 @@ export default function LoginPage() {
           <h1 className="login-title">Welcome to hanh94esl</h1>
           <p className="login-subtitle">Sign in to begin your IELTS journey</p>
 
-          <button className="login-signin-btn" onClick={signIn} disabled={isSubmitting}>
+          <button className="login-signin-btn" onClick={signIn} disabled={phase !== 'idle'} aria-busy={phase !== 'idle'}>
             <div className="login-google-icon" />
-            Sign in with Google
+            {phase === 'restoring' ? 'Checking your session…' : phase === 'signingIn' ? 'Opening Google…' : phase === 'verifying' ? 'Verifying your account…' : phase === 'redirecting' ? 'Opening your dashboard…' : toast && auth.currentUser ? 'Try again' : 'Sign in with Google'}
           </button>
+
+          {phase === 'idle' && toast && auth.currentUser && (
+            <button className="login-switch-account" onClick={() => {
+              setPhase('restoring');
+              void signOutUser().then(() => setToast(null)).catch((error) => setToast({ text: getAuthErrorMessage(error), type: 'error' })).finally(() => setPhase('idle'));
+            }}>Use another account</button>
+          )}
 
           <div className="login-security-note">
             <p>
               <i className="fas fa-shield-alt" />
-              Your privacy and security are our top priorities. We use industry-standard encryption and never store your personal information.
+              We use your Google profile to identify your account and provide access to your classes and tests.
             </p>
           </div>
 

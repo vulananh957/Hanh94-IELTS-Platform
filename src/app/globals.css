@@ -858,8 +858,7 @@ footer::before {
     padding: 2rem;
     position: relative;
     overflow-x: hidden;
-    opacity: 0;
-    animation: loginFadeIn 0.5s ease forwards;
+    opacity: 1;
     color: var(--text-dark);
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1rem;
@@ -888,15 +887,12 @@ footer::before {
     z-index: 10;
     width: 100%;
     max-width: 560px;
-    animation: loginFadeInUp 0.8s cubic-bezier(0.4, 0, 0.2, 1);
     font-size: 1rem;
     color: var(--text-dark);
 }
 
 .login-card {
-    background: rgba(255, 255, 255, 0.95);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    background: #fff;
     border: 1px solid rgba(255, 255, 255, 0.2);
     border-radius: 32px;
     padding: 4rem;
@@ -904,7 +900,6 @@ footer::before {
     text-align: center;
     position: relative;
     overflow: hidden;
-    transition: transform 0.2s ease;
     color: var(--text-dark);
     font-size: 1rem;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -931,7 +926,6 @@ footer::before {
     justify-content: center;
     margin: 0 auto 2.5rem;
     box-shadow: 0 15px 40px rgba(0, 103, 105, 0.3);
-    animation: loginFloating 6s ease-in-out infinite;
 }
 
 .login-logo i {
@@ -974,46 +968,43 @@ footer::before {
     justify-content: center;
     gap: 1rem;
     width: 100%;
-    background: #fff;
+    background-color: #ffffff;
     color: var(--text-dark);
-    border: 2px solid rgba(0, 103, 105, 0.1);
+    border: 2px solid rgba(0, 103, 105, 0.15);
     padding: 1.2rem 2rem;
     border-radius: 60px;
     font-size: 1.1rem;
     font-weight: 600;
-    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
     position: relative;
     overflow: hidden;
     cursor: pointer;
 }
 
-.login-signin-btn::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
-    background: var(--gradient-primary);
-    transition: left 0.4s ease;
-    z-index: -1;
+.login-signin-btn:hover:not(:disabled),
+.login-signin-btn:focus-visible:not(:disabled) {
+    background-color: #f4fbf7;
+    border-color: var(--primary-medium);
+    color: var(--primary-dark);
+    box-shadow: 0 12px 32px rgba(0, 103, 105, 0.16);
+    transform: translateY(-2px);
 }
 
-.login-signin-btn:hover:not(:disabled)::before {
-    left: 0;
+.login-signin-btn:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: 0 4px 16px rgba(0, 103, 105, 0.12);
 }
 
-.login-signin-btn:hover:not(:disabled) {
-    transform: translateY(-3px) scale(1.02);
-    box-shadow: 0 15px 40px rgba(0, 103, 105, 0.2);
-    color: #fff;
-    border-color: transparent;
+.login-signin-btn:focus-visible {
+    outline: 2px solid var(--primary-medium);
+    outline-offset: 3px;
 }
 
 .login-signin-btn:disabled {
-    opacity: 0.8;
+    opacity: 0.7;
     cursor: wait;
+    transform: none;
 }
 
 .login-google-icon {
@@ -1199,6 +1190,7 @@ footer::before {
 @media (max-width: 768px) {
     .login-page {
         padding: 1rem;
+        flex-direction: column;
     }
 
     .login-card {
@@ -1218,7 +1210,23 @@ footer::before {
         position: relative;
         top: auto;
         left: auto;
-        margin-bottom: 2rem;
+        align-self: flex-start;
+        flex-shrink: 0;
+        margin-bottom: 1rem;
+    }
+
+    .login-signin-btn {
+        padding: 1rem;
+        gap: 0.75rem;
+        font-size: 1rem;
+        min-height: 64px;
+    }
+
+    .login-toast {
+        left: 1rem;
+        right: 1rem;
+        top: 1rem;
+        padding: 1rem;
     }
 
     .login-footer-links {
@@ -1310,3 +1318,35 @@ footer::before {
 
 
 
+
+/* Keep session transitions stable while Firebase and account access are checked. */
+.auth-session-screen {
+    min-height: 100dvh;
+    display: grid;
+    place-items: center;
+    padding: 2rem;
+    text-align: center;
+    background: #f8faf9;
+    color: #164e43;
+    font-size: 1rem;
+    font-weight: 500;
+}
+.auth-session-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.85rem;
+}
+.auth-loading-spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid rgba(0, 103, 105, 0.15);
+    border-top-color: var(--primary-dark, #006769);
+    border-radius: 50%;
+    animation: authSpin 0.75s linear infinite;
+}
+@keyframes authSpin {
+    to { transform: rotate(360deg); }
+}
+.auth-session-actions { display: flex; justify-content: center; gap: 1rem; margin-top: 1rem; }
+.auth-session-actions button, .login-switch-account { padding: 0.75rem 1rem; text-decoration: underline; cursor: pointer; }

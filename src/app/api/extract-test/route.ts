@@ -18,7 +18,11 @@ const MAX_GEMINI_RETRIES = 3;
 const BASE_RETRY_DELAY_MS = 700;
 const MAX_RETRY_DELAY_MS = 5000;
 const PRIMARY_MAX_OUTPUT_TOKENS = 8192;
-const EXPANDED_MAX_OUTPUT_TOKENS = 16384;
+// Firebase Hosting terminates dynamic requests at 60 seconds. Leave enough
+// time for this route to turn an upstream timeout into a JSON response.
+const GEMINI_REQUEST_TIMEOUT_MS = 45_000;
+const EXTRACTION_DEADLINE_MS = 52_000;
+const MIN_RETRY_WINDOW_MS = 8_000;
 const MAX_WORD_TEXT_CHARS = 120_000;
 
 const DOC_MIME_TYPE = 'application/msword';
@@ -154,6 +158,27 @@ function isLikelyTokenLimitFinishReason(reason: string): boolean {
   );
 }
 
+function logGeminiUsage(response: unknown, finishReason: string): void {
+  if (!response || typeof response !== 'object') return;
+
+  const usage = (response as {
+    usageMetadata?: {
+      promptTokenCount?: unknown;
+      candidatesTokenCount?: unknown;
+      thoughtsTokenCount?: unknown;
+      totalTokenCount?: unknown;
+    };
+  }).usageMetadata;
+
+  console.info('[extract-test] Gemini generation completed.', {
+    finishReason: finishReason || 'UNKNOWN',
+    promptTokens: usage?.promptTokenCount,
+    outputTokens: usage?.candidatesTokenCount,
+    thinkingTokens: usage?.thoughtsTokenCount,
+    totalTokens: usage?.totalTokenCount,
+  });
+}
+
 function tryParseJsonCandidate(candidate: string): unknown | null {
   try {
     return JSON.parse(candidate);
@@ -263,6 +288,7 @@ function safeParseModelJson(rawText: string): unknown {
 }
 
 export async function POST(request: NextRequest) {
+  const extractionStartedAt = Date.now();
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
@@ -392,18 +418,32 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const generateWithRetry = async (maxOutputTokens: number) => {
+    const generateWithRetry = async () => {
       let modelResponse: Awaited<ReturnType<typeof ai.models.generateContent>> | null = null;
       let lastGeminiError: unknown = null;
 
       for (let attempt = 0; attempt <= MAX_GEMINI_RETRIES; attempt += 1) {
+        const remainingMs = EXTRACTION_DEADLINE_MS - (Date.now() - extractionStartedAt);
+        if (remainingMs < MIN_RETRY_WINDOW_MS) {
+          throw lastGeminiError || new Error('Gemini request exceeded the extraction time budget.');
+        }
+
         try {
           modelResponse = await ai.models.generateContent({
             model: PINNED_GEMINI_MODEL,
             contents: modelContents as any,
             config: {
               temperature: 0.1,
-              maxOutputTokens,
+              // Keep the existing output cap. Thinking is disabled because this
+              // task is structured transcription, and Gemini 2.5 Flash otherwise
+              // spends paid output budget and latency on dynamic thinking.
+              maxOutputTokens: PRIMARY_MAX_OUTPUT_TOKENS,
+              thinkingConfig: {
+                thinkingBudget: 0,
+              },
+              httpOptions: {
+                timeout: Math.min(GEMINI_REQUEST_TIMEOUT_MS, remainingMs - 2_000),
+              },
               responseMimeType: 'application/json',
               responseJsonSchema: extractionResponseJsonSchema,
             },
@@ -418,6 +458,11 @@ export async function POST(request: NextRequest) {
           }
 
           const delay = computeBackoffDelay(attempt);
+          const remainingAfterDelay = EXTRACTION_DEADLINE_MS - (Date.now() - extractionStartedAt) - delay;
+          if (remainingAfterDelay < MIN_RETRY_WINDOW_MS) {
+            throw error;
+          }
+
           console.warn(
             `[extract-test] Gemini transient error on attempt ${attempt + 1}/${MAX_GEMINI_RETRIES + 1}. Retrying in ${delay}ms.`,
             toErrorMessage(error),
@@ -433,36 +478,24 @@ export async function POST(request: NextRequest) {
       return modelResponse;
     };
 
-    let modelResponse = await generateWithRetry(PRIMARY_MAX_OUTPUT_TOKENS);
-    let usedExpandedBudget = false;
+    const modelResponse = await generateWithRetry();
+    const finishReason = getFirstCandidateFinishReason(modelResponse);
+    logGeminiUsage(modelResponse, finishReason);
 
-    const firstFinishReason = getFirstCandidateFinishReason(modelResponse);
-    if (isLikelyTokenLimitFinishReason(firstFinishReason)) {
-      console.warn(
-        `[extract-test] Finish reason indicates token limit (${firstFinishReason}). Retrying with expanded output budget.`,
-      );
-      modelResponse = await generateWithRetry(EXPANDED_MAX_OUTPUT_TOKENS);
-      usedExpandedBudget = true;
-    }
-
-    let modelText = typeof modelResponse.text === 'string' ? modelResponse.text : '';
+    const modelText = typeof modelResponse.text === 'string' ? modelResponse.text : '';
     let rawJson: unknown;
 
     try {
       rawJson = safeParseModelJson(modelText);
     } catch (parseError) {
-      if (usedExpandedBudget) {
-        throw parseError;
+      if (isLikelyTokenLimitFinishReason(finishReason)) {
+        throw new Error(
+          `Gemini output reached the fixed ${PRIMARY_MAX_OUTPUT_TOKENS}-token limit. `
+          + 'The request was not regenerated with a larger budget to avoid extra cost.',
+        );
       }
 
-      console.warn(
-        '[extract-test] JSON parse failed on primary output budget. Retrying generation with expanded budget.',
-        toErrorMessage(parseError),
-      );
-
-      modelResponse = await generateWithRetry(EXPANDED_MAX_OUTPUT_TOKENS);
-      modelText = typeof modelResponse.text === 'string' ? modelResponse.text : '';
-      rawJson = safeParseModelJson(modelText);
+      throw parseError;
     }
 
     const rawPayloadResult = RawExtractedPayloadSchema.safeParse(rawJson);

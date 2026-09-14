@@ -2,11 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import JSZip from 'jszip';
 import { firebaseApp } from '@/services/firebase';
-import { clearAuthState } from '@/services/auth';
+import { signOutUser } from '@/services/auth';
 import { useFileInputWithDragDrop } from '@/features/upload-test/hooks/use-file-input-with-drag-drop';
 import {
   getManualGradingSubmissions,
@@ -426,16 +426,12 @@ export function ManualGradingContent() {
   };
 
   const handleLogout = async () => {
-    if (!auth) return;
-    if (!confirm('Are you sure you want to logout?')) return;
-
+    if (!window.confirm('Are you sure you want to logout?')) return;
     try {
-      await signOut(auth);
-      clearAuthState();
-      router.push('/login');
+      await signOutUser();
+      router.replace('/login');
     } catch {
-      clearAuthState();
-      router.push('/login');
+      window.alert('Unable to sign out. Please try again.');
     }
   };
 

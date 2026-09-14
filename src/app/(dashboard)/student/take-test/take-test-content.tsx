@@ -632,30 +632,13 @@ export function TakeTestContent() {
       const [track] = stream.getVideoTracks();
       if (!track || track.readyState === 'ended') {
         pendingScreenStreamRef.current = null;
-        screenSetupMessageRef.current = 'Screen sharing ended before it could be verified. Please choose Entire screen and try again.';
+        screenSetupMessageRef.current = 'Screen sharing ended before it could be verified. Please try again.';
         return false;
       }
       activateScreenSharePreview(screenVideoRef.current, stream);
 
-      if (await waitForVerifiedEntireScreenShare(track)) {
-        acceptVerifiedStream(stream, track);
-        return true;
-      }
-
-      const status = getScreenShareVerificationStatus(track?.getSettings?.().displaySurface);
-      if (status === 'pending') {
-        // Do not terminate a user-selected stream merely because Chromium has
-        // not exposed its surface metadata yet. A later setup click rechecks
-        // this same stream; it can never start an Attempt until verified.
-        pendingScreenStreamRef.current = stream;
-        screenSetupMessageRef.current = 'Screen sharing is active, but Chrome is still confirming Entire screen. Keep sharing and try again in a moment.';
-        return false;
-      }
-
-      stream.getTracks().forEach((item) => item.stop());
-      pendingScreenStreamRef.current = null;
-      screenSetupMessageRef.current = 'Please choose Entire screen in a browser that supports screen verification.';
-      return false;
+      acceptVerifiedStream(stream, track);
+      return true;
     };
 
     try {

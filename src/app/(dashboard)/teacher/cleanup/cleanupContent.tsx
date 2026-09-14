@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import {
   collection,
   getDocs,
@@ -15,7 +15,7 @@ import {
   type QueryDocumentSnapshot,
 } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
-import { clearAuthState } from '@/services/auth';
+import { signOutUser } from '@/services/auth';
 import '../teacher-dashboard.css';
 import './cleanup.css';
 
@@ -410,16 +410,12 @@ export function CleanupContent() {
   };
 
   const handleLogout = async () => {
-    if (!auth) return;
-    if (!confirm('Are you sure you want to logout?')) return;
-
+    if (!window.confirm('Are you sure you want to logout?')) return;
     try {
-      await signOut(auth);
-      clearAuthState();
-      router.push('/login');
+      await signOutUser();
+      router.replace('/login');
     } catch {
-      clearAuthState();
-      router.push('/login');
+      window.alert('Unable to sign out. Please try again.');
     }
   };
 

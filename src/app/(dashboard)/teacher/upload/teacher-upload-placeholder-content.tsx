@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { firebaseApp } from '@/services/firebase';
-import { clearAuthState } from '@/services/auth';
+import { signOutUser } from '@/services/auth';
 import { UploadTestWorkbench } from '../../../../features/upload-test/components/upload-test-workbench';
 import '../teacher-dashboard.css';
 import './upload-placeholder.css';
@@ -69,16 +69,12 @@ export function TeacherUploadPlaceholderContent() {
   }, [user]);
 
   const handleLogout = async () => {
-    if (!auth) return;
-    if (!confirm('Are you sure you want to logout?')) return;
-
+    if (!window.confirm('Are you sure you want to logout?')) return;
     try {
-      await signOut(auth);
-      clearAuthState();
-      router.push('/login');
+      await signOutUser();
+      router.replace('/login');
     } catch {
-      clearAuthState();
-      router.push('/login');
+      window.alert('Unable to sign out. Please try again.');
     }
   };
 

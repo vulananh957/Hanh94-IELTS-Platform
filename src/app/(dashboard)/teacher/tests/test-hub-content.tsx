@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, getFirestore, query, where } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
-import { clearAuthState } from '@/services/auth';
+import { signOutUser } from '@/services/auth';
 import { TeacherResultDetailDrawer } from './TeacherResultDetailDrawer';
 import { TeacherWritingResultDetailDrawer } from './TeacherWritingResultDetailDrawer';
 import {
@@ -1419,12 +1419,10 @@ export function TestHubContent() {
   const handleLogout = async () => {
     if (!window.confirm('Are you sure you want to logout?')) return;
     try {
-      await signOut(auth);
-      clearAuthState();
-      router.push('/login');
+      await signOutUser();
+      router.replace('/login');
     } catch {
-      clearAuthState();
-      router.push('/login');
+      window.alert('Unable to sign out. Please try again.');
     }
   };
 

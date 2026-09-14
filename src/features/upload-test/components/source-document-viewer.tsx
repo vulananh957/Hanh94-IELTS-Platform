@@ -54,6 +54,16 @@ function detectModeFromDataUrl(dataUrl: string | null | undefined): 'pdf' | 'ima
   return 'unsupported';
 }
 
+function buildPdfPreviewSrc(src: string): string {
+  const pdfPreviewParams = 'toolbar=0&navpanes=0&scrollbar=1&view=FitH&zoom=page-width';
+
+  if (src.includes('#')) {
+    return `${src}&${pdfPreviewParams}`;
+  }
+
+  return `${src}#${pdfPreviewParams}`;
+}
+
 function useObjectUrlFromFile(file: File | null): string | null {
   const objectUrl = useMemo(() => {
     if (!file) return null;
@@ -174,7 +184,7 @@ export function SourceDocumentViewer({ skill, sourceFile, sourceDocument, listen
         {mode === 'pdf' && previewSrc ? (
           <iframe
             title="Source PDF preview"
-            src={`${previewSrc}#toolbar=0&navpanes=0&scrollbar=1`}
+            src={buildPdfPreviewSrc(previewSrc)}
             className="source-viewer-iframe"
           />
         ) : null}

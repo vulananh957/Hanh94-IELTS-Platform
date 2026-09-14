@@ -2,6 +2,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   getDocs,
   getFirestore,
   onSnapshot,
@@ -13,6 +14,7 @@ import {
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import { firebaseApp } from './firebase';
+import { buildClassAssignmentWithOpenedTimes } from '@/lib/class-assignment-timing';
 
 export type TestSkill = 'all' | 'listening' | 'reading' | 'writing' | 'speaking' | 'unknown';
 
@@ -451,12 +453,13 @@ export async function updateTestDistribution(params: {
 }): Promise<void> {
   const db = getFirestore(firebaseApp);
   const selectedClasses = Array.from(new Set(params.selectedClasses.map((value) => String(value || '').trim()).filter(Boolean)));
+  const testRef = doc(db, 'tests', params.testId);
+  const currentTest = await getDoc(testRef);
 
-  await updateDoc(doc(db, 'tests', params.testId), {
-    classAssignment: {
+  await updateDoc(testRef, {
+    classAssignment: buildClassAssignmentWithOpenedTimes(currentTest.data()?.classAssignment, {
       distribution: params.distribution,
-      selectedClasses: params.distribution === 'all' ? [] : selectedClasses,
-      updatedAt: new Date(),
-    },
+      selectedClasses,
+    }, new Date()),
   });
 }

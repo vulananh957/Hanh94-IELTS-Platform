@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { firebaseApp } from '@/services/firebase';
-import { clearAuthState } from '@/services/auth';
+import { signOutUser } from '@/services/auth';
 import { fetchStudentWritingResults, type WritingResult } from '@/services/student-writing-results';
 import { fetchStudentObjectiveTests, type ObjectiveTestResult } from '@/services/student-objective-tests';
 import { fetchStudentClassName } from '@/services/student-profile';
@@ -209,15 +209,12 @@ export function PerformanceContent() {
   }, [sidebarOpen]);
 
   const handleLogout = async () => {
-    if (!auth) return;
-    if (confirm('Are you sure you want to log out?')) {
-      try {
-        clearAuthState();
-        await signOut(auth);
-        router.replace('/login');
-      } catch (err) {
-        console.error('Logout error:', err);
-      }
+    if (!window.confirm('Are you sure you want to logout?')) return;
+    try {
+      await signOutUser();
+      router.replace('/login');
+    } catch {
+      window.alert('Unable to sign out. Please try again.');
     }
   };
 

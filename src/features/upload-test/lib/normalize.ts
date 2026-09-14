@@ -8,6 +8,7 @@ import {
   type TestQuestionType,
 } from '../types';
 import type { RawExtractedPayload } from '../schema';
+import { buildObjectiveExtractionWarnings } from './extraction-quality';
 import { calculateQuestionNumbers, isChooseMultipleQuestionType } from './numbering';
 
 const SINGLE_CHOICE_TYPES = new Set<LegacyQuestionType>([
@@ -789,6 +790,7 @@ export function normalizeExtractedPayload(input: {
   });
 
   const numberedParts = calculateQuestionNumbers(parts);
+  warnings.push(...buildObjectiveExtractionWarnings(input.skill, numberedParts));
 
   return {
     parts: numberedParts,

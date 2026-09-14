@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuth } from 'firebase-admin/auth';
 import { Timestamp, getFirestore } from 'firebase-admin/firestore';
 import { firebaseAdminApp } from '@/services/firebase-admin';
+import { AccountAccessError, findManagedUser, resolveManagedAccess } from '@/services/managed-user-access';
+import { isDisabledAccount } from '@/lib/auth-role';
 
 export const runtime = 'nodejs';
 
@@ -76,31 +78,7 @@ async function getBearerToken(request: NextRequest): Promise<string | null> {
   return null;
 }
 
-async function findUserDocRef(email: string) {
-  const db = getFirestore(firebaseAdminApp);
-  const normalizedEmail = normalizeEmail(email);
-  const candidateIds = Array.from(
-    new Set([normalizeText(email), normalizedEmail].filter(Boolean)),
-  );
-
-  for (const candidateId of candidateIds) {
-    const ref = db.collection('users').doc(candidateId);
-    const snap = await ref.get();
-    if (snap.exists) {
-      return { ref, snap };
-    }
-  }
-
-  for (const candidateEmail of candidateIds) {
-    const querySnap = await db.collection('users').where('email', '==', candidateEmail).limit(1).get();
-    if (!querySnap.empty) {
-      const snap = querySnap.docs[0];
-      return { ref: snap.ref, snap };
-    }
-  }
-
-  return null;
-}
+const findUserDocRef = findManagedUser;
 
 async function resolveClassDocRef(classId: string, classCode?: string | null) {
   const db = getFirestore(firebaseAdminApp);
@@ -127,30 +105,7 @@ async function resolveClassDocRef(classId: string, classCode?: string | null) {
   return null;
 }
 
-async function getRequesterRole(email: string): Promise<ManagedUserRole | null> {
-  const userRef = await findUserDocRef(email);
-  if (!userRef) {
-    return null;
-  }
-
-  const data = userRef.snap.data() as Record<string, unknown> | undefined;
-  return normalizeRole(data?.role);
-}
-
-function isSoftDisabledUser(data: Record<string, unknown> | undefined): boolean {
-  if (!data) return false;
-
-  const status = normalizeText(data.status).toLowerCase();
-  return (
-    status === 'disabled'
-    || status === 'deleted'
-    || status === 'inactive'
-    || data.isActive === false
-    || data.disabled === true
-    || Boolean(data.deletedAt)
-    || Boolean(data.removedAt)
-  );
-}
+const isSoftDisabledUser = isDisabledAccount;
 
 export async function POST(request: NextRequest) {
   try {
@@ -159,7 +114,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Unauthorized.' }, { status: 401 });
     }
 
-    const decoded = await getAuth(firebaseAdminApp).verifyIdToken(token);
+    const decoded = await getAuth(firebaseAdminApp).verifyIdToken(token, true);
     const requesterEmail = normalizeEmail(decoded.email);
     if (!requesterEmail) {
       return NextResponse.json({ success: false, error: 'Unauthorized.' }, { status: 401 });
@@ -168,6 +123,7 @@ export async function POST(request: NextRequest) {
     const body = (await request.json()) as Record<string, unknown> & { action?: string };
     const action = normalizeText(body.action);
     const db = getFirestore(firebaseAdminApp);
+    const requester = await resolveManagedAccess(decoded);
 
     if (action === 'syncLogin') {
       const targetEmail = normalizeEmail(body.email || requesterEmail);
@@ -175,12 +131,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: 'Forbidden.' }, { status: 403 });
       }
 
-      const requestedRole = normalizeRole(body.role);
-      if (!requestedRole) {
-        return NextResponse.json({ success: false, error: 'Invalid role.' }, { status: 400 });
-      }
-
-      const existing = await findUserDocRef(targetEmail);
+      const existing = requester.existing;
       const userRef = existing?.ref ?? db.collection('users').doc(targetEmail);
       const currentData = existing?.snap.data() as Record<string, unknown> | undefined;
       const timestamp = Timestamp.now();
@@ -190,14 +141,18 @@ export async function POST(request: NextRequest) {
         name: normalizeText(body.displayName) || normalizeText(currentData?.name) || normalizeText(decoded.name) || targetEmail.split('@')[0],
         displayName: normalizeText(body.displayName) || normalizeText(currentData?.displayName) || normalizeText(decoded.name) || null,
         photoURL: normalizeText(body.photoURL) || normalizeText(currentData?.photoURL) || normalizeText(decoded.picture) || null,
-        role: normalizeRole(currentData?.role) ?? requestedRole,
-        classCode: normalizeText(body.classCode) || normalizeText(currentData?.classCode) || null,
+        ...(!existing ? { role: requester.role } : {}),
+        classCode: normalizeText(currentData?.classCode) || null,
         lastLogin: timestamp,
         lastLoginAt: timestamp,
         updatedAt: timestamp,
       }, { merge: true });
 
       return NextResponse.json({ success: true });
+    }
+
+    if (!isPrivilegedRole(requester.role)) {
+      return NextResponse.json({ success: false, error: 'Forbidden.' }, { status: 403 });
     }
 
     if (action === 'addUser') {
@@ -248,11 +203,6 @@ export async function POST(request: NextRequest) {
       }, { merge: true });
 
       return NextResponse.json({ success: true, restored: Boolean(existing) });
-    }
-
-    const requesterRole = await getRequesterRole(requesterEmail);
-    if (!isPrivilegedRole(requesterRole)) {
-      return NextResponse.json({ success: false, error: 'Forbidden.' }, { status: 403 });
     }
 
     if (action === 'updateUser') {
@@ -355,6 +305,13 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: false, error: 'Unsupported action.' }, { status: 400 });
   } catch (error) {
+    if (error instanceof AccountAccessError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: error.status });
+    }
+    const code = (error as { code?: string }).code;
+    if (['auth/id-token-expired', 'auth/id-token-revoked', 'auth/invalid-id-token', 'auth/argument-error', 'auth/user-disabled', 'auth/user-not-found'].includes(code || '')) {
+      return NextResponse.json({ success: false, error: 'Unauthorized.' }, { status: 401 });
+    }
     const message = error instanceof Error ? error.message : 'Unknown error.';
     console.error('[user-management API]', message);
     return NextResponse.json({ success: false, error: message }, { status: 500 });

@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, getFirestore, onSnapshot, query, orderBy, limit } from 'firebase/firestore';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
+import { collection, getFirestore, onSnapshot, query, orderBy, limit, type DocumentData, type Query } from 'firebase/firestore';
 import { firebaseApp } from '@/services/firebase';
-import { clearAuthState } from '@/services/auth';
+import { signOutUser } from '@/services/auth';
 import { calculateDashboardStats, getRecentActivity, invalidateDashboardDataCache, type ActivityRecord, type DashboardStats } from '@/services/dashboard';
 import './teacher-dashboard.css';
 
@@ -117,7 +117,7 @@ export function TeacherDashboardContent() {
       }, 200);
     };
 
-    const watchQuery = (source: Parameters<typeof onSnapshot>[0]) => {
+    const watchQuery = (source: Query<DocumentData, DocumentData>) => {
       let isInitialSnapshot = true;
       const unsubscribe = onSnapshot(source, () => {
         if (isInitialSnapshot) {
@@ -159,15 +159,12 @@ export function TeacherDashboardContent() {
   }, [user?.email]);
 
   const handleLogout = async () => {
-    if (!confirm('Are you sure you want to logout?')) return;
+    if (!window.confirm('Are you sure you want to logout?')) return;
     try {
-      await signOut(auth);
-      clearAuthState();
-      router.push('/login');
-    } catch (err) {
-      console.error('Logout error:', err);
-      clearAuthState();
-      router.push('/login');
+      await signOutUser();
+      router.replace('/login');
+    } catch {
+      window.alert('Unable to sign out. Please try again.');
     }
   };
 

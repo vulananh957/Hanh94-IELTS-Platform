@@ -1,12 +1,15 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { getStoredAuth } from '@/services/auth';
 import { ExtractionLoadingPanel } from './extraction-loading-panel';
 import { ReviewEditorPane } from './review-editor-pane';
 import { SourceDocumentViewer } from './source-document-viewer';
 import { useFileInputWithDragDrop } from '../hooks/use-file-input-with-drag-drop';
+import { countQuestionSlots, getExpectedPartCount, getExpectedQuestionCount } from '../lib/extraction-quality';
+import { parseExtractHttpResponse } from '../lib/extract-http-response';
 import { useUploadTestStore } from '../store/use-upload-test-store';
 import {
   checkTestName,
@@ -17,8 +20,6 @@ import {
 } from '../services/upload-test-api';
 import type { ClassRecord } from '../services/upload-test-api';
 import type {
-  ExtractTestErrorResponse,
-  ExtractTestResponse,
   TestPart,
   UploadFileBucket,
   TestSkill,
@@ -43,6 +44,23 @@ type ListeningAnswerSheetQuestionType =
   | 'Matching (Info/Features/Sentence Halves)'
   | 'Short Answer Questions'
   | 'Pick from a List';
+
+function SubmitLoadingOverlay() {
+  const overlay = (
+    <div className="workbench-overlay" role="status" aria-live="polite" aria-busy="true">
+      <div className="workbench-overlay-card">
+        <div className="workbench-overlay-spinner" />
+        <p>Uploading media and creating test...</p>
+      </div>
+    </div>
+  );
+
+  if (typeof document === 'undefined') {
+    return overlay;
+  }
+
+  return createPortal(overlay, document.body);
+}
 
 function hasNonEmptyText(value: unknown): boolean {
   return String(value || '').trim().length > 0;
@@ -353,7 +371,6 @@ export function UploadTestWorkbench() {
 
   const draft = useUploadTestStore((state) => state.draft);
   const extraction = useUploadTestStore((state) => state.extraction);
-  const answerKeyPreview = useUploadTestStore((state) => state.answerKeyPreview);
   const normalizedTestName = draft.testName.trim();
 
   const setSkill = useUploadTestStore((state) => state.setSkill);
@@ -451,10 +468,33 @@ export function UploadTestWorkbench() {
     };
   }, [normalizedTestName]);
 
-  const answerKeyCount = useMemo(() => Object.keys(answerKeyPreview).length, [answerKeyPreview]);
-  const isSubmitDisabled = submitStatus === 'loading';
+  const questionSlotCount = useMemo(() => countQuestionSlots(draft.parts), [draft.parts]);
   const canExtractQuestions = draft.skill === 'reading' || draft.skill === 'listening';
   const isWritingMode = draft.skill === 'writing';
+  const expectedQuestionCount = getExpectedQuestionCount(draft.skill);
+  const expectedPartCount = getExpectedPartCount(draft.skill);
+  const hasObjectiveQuestionShortfall = Boolean(
+    expectedQuestionCount && draft.parts.length > 0 && questionSlotCount !== expectedQuestionCount,
+  );
+  const hasObjectivePartMismatch = Boolean(
+    expectedPartCount && draft.parts.length > 0 && draft.parts.length !== expectedPartCount,
+  );
+  const hasObjectiveStructureIssue = hasObjectiveQuestionShortfall || hasObjectivePartMismatch;
+  const isSubmitDisabled = submitStatus === 'loading' || hasObjectiveStructureIssue;
+  const extractionStatusLabel =
+    extraction.status === 'idle'
+      ? 'Ready'
+      : extraction.status === 'loading'
+        ? 'Analyzing'
+        : extraction.status === 'success'
+          ? 'Extracted'
+          : 'Needs retry';
+  const questionCountLabel = expectedQuestionCount
+    ? `${questionSlotCount}/${expectedQuestionCount}`
+    : String(questionSlotCount);
+  const derivedWarningCount = hasObjectiveStructureIssue
+    ? Math.max(extraction.warnings.length, 1)
+    : extraction.warnings.length;
 
   function applyAssignmentMode(nextMode: Exclude<AssignmentMode, null>) {
     if (nextMode === 'all') {
@@ -523,7 +563,7 @@ export function UploadTestWorkbench() {
         body: formData,
       });
 
-      const payload = (await response.json()) as ExtractTestResponse | ExtractTestErrorResponse;
+      const payload = await parseExtractHttpResponse(response);
 
       if (!response.ok || !payload.ok) {
         const errorMessage = payload.ok ? 'Extraction failed.' : payload.details || payload.error;
@@ -690,6 +730,24 @@ export function UploadTestWorkbench() {
       return;
     }
 
+    const expectedObjectiveTotal = getExpectedQuestionCount(skill);
+    if (expectedObjectiveTotal && questionSlotCount !== expectedObjectiveTotal) {
+      setSubmitStatus('error');
+      setSubmitMessage(
+        `This ${skill} test has ${questionSlotCount}/${expectedObjectiveTotal} question slots. Please re-run extraction or add the missing questions before submitting.`,
+      );
+      return;
+    }
+
+    const expectedObjectivePartCount = getExpectedPartCount(skill);
+    if (expectedObjectivePartCount && draft.parts.length !== expectedObjectivePartCount) {
+      setSubmitStatus('error');
+      setSubmitMessage(
+        `This ${skill} test has ${draft.parts.length}/${expectedObjectivePartCount} parts. Please re-run extraction or add the missing part before submitting.`,
+      );
+      return;
+    }
+
     if (skill === 'writing') {
       const hasTask1 = Boolean(draft.files.writingTask1?.[0]);
       const hasTask2 = Boolean(draft.files.writingTask2?.[0]);
@@ -765,11 +823,15 @@ export function UploadTestWorkbench() {
   return (
     <section className="upload-workbench workbench-canvas">
       <div className="workbench-header">
-        <span className="workbench-kicker">Authoring Studio</span>
-        <h2 className="workbench-title">AI-Assisted Upload Test Editor</h2>
+        <h1 className="workbench-title">Upload Test</h1>
         <p className="workbench-subtitle">
-          Extract with Gemini, then review and edit every part/question type/question before submit.
+          Extract, review, and publish IELTS tests from PDF, DOC, or image sources.
         </p>
+        <div className="workbench-hero-pills" aria-label="Upload workflow">
+          <span><i className="fas fa-magic" aria-hidden="true" /> Gemini extraction</span>
+          <span><i className="fas fa-list-check" aria-hidden="true" /> Structured review</span>
+          <span><i className="fas fa-paper-plane" aria-hidden="true" /> Test Hub ready</span>
+        </div>
       </div>
 
       <div className="workbench-controls">
@@ -1181,37 +1243,49 @@ export function UploadTestWorkbench() {
         </div>
 
         <div className="workbench-action-panel">
-          <div className="workbench-btn-row">
-            {canExtractQuestions ? (
-              <button
-                type="button"
-                className="workbench-btn workbench-btn-extract"
-                onClick={runExtraction}
-                disabled={extraction.status === 'loading'}
-              >
-                <span className="workbench-btn-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" className="workbench-btn-icon-svg">
-                    <path
-                      d="M6 3.5h8l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 5 20V5A1.5 1.5 0 0 1 6.5 3.5z"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path d="M14 3.5V8h4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                    <path d="M8 11.5h5M8 14.5h8M8 17.5h6" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    <circle cx="18.5" cy="18.5" r="3.2" fill="#f0fdf4" stroke="currentColor" strokeWidth="1.4" />
-                    <path d="M17.4 18.5h2.2M18.5 17.4v2.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                  </svg>
-                </span>
-                <span>{extraction.status === 'loading' ? 'Analyzing...' : 'Extract Questions'}</span>
-              </button>
-            ) : isWritingMode ? (
-              <span className="workbench-pill">Writing mode: extraction is disabled.</span>
-            ) : null}
+          <div className="workbench-action-main">
+            <div className="workbench-action-copy">
+              <span className={`workbench-status-dot is-${extraction.status}`} aria-hidden="true" />
+              <div>
+                <h3 className="workbench-action-title">Extraction & publish</h3>
+                <p className="workbench-action-subtitle">
+                  {canExtractQuestions
+                    ? 'Run extraction, review the full 40-question set, then publish to Test Hub.'
+                    : isWritingMode
+                      ? 'Upload writing materials and choose the submission rule before publishing.'
+                      : 'Choose a skill to begin configuring this test.'}
+                </p>
+              </div>
+            </div>
 
-            <div className="workbench-submit-group">
+            <div className="workbench-btn-row">
+              {canExtractQuestions ? (
+                <button
+                  type="button"
+                  className="workbench-btn workbench-btn-extract"
+                  onClick={runExtraction}
+                  disabled={extraction.status === 'loading'}
+                >
+                  <span className="workbench-btn-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" className="workbench-btn-icon-svg">
+                      <path
+                        d="M6 3.5h8l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 5 20V5A1.5 1.5 0 0 1 6.5 3.5z"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      <path d="M14 3.5V8h4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                      <path d="M8 11.5h5M8 14.5h8M8 17.5h6" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      <circle cx="18.5" cy="18.5" r="3.2" fill="#f0fdf4" stroke="currentColor" strokeWidth="1.4" />
+                      <path d="M17.4 18.5h2.2M18.5 17.4v2.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                    </svg>
+                  </span>
+                  <span>{extraction.status === 'loading' ? 'Analyzing...' : 'Extract Questions'}</span>
+                </button>
+              ) : null}
+
               <button
                 type="button"
                 className="workbench-btn workbench-btn-solid workbench-btn-submit"
@@ -1243,48 +1317,54 @@ export function UploadTestWorkbench() {
             </div>
           </div>
 
-          <div className="workbench-pill-row">
-            {canExtractQuestions ? (
+          <div className="workbench-action-footer">
+            <div className="workbench-pill-row">
+              {canExtractQuestions ? (
+                <span className="workbench-pill">
+                  Status: <strong className="workbench-pill-value">{extractionStatusLabel}</strong>
+                </span>
+              ) : null}
               <span className="workbench-pill">
-                Status: <strong className="workbench-pill-value">{extraction.status}</strong>
+                Parts: <strong className="workbench-pill-value">{draft.parts.length}</strong>
               </span>
-            ) : null}
-            <span className="workbench-pill">
-              Parts: <strong className="workbench-pill-value">{draft.parts.length}</strong>
-            </span>
-            <span className="workbench-pill">
-              Answer keys: <strong className="workbench-pill-value">{answerKeyCount}</strong>
-            </span>
-            {draft.skill === 'writing' ? (
               <span className="workbench-pill">
-                Rule:{' '}
-                <strong className="workbench-pill-value">
-                  {draft.writingRule === 'overtime'
-                    ? 'Overtime + min words'
-                    : draft.writingRule === 'auto-submit'
-                      ? '60m auto-submit'
-                      : 'Not selected'}
-                </strong>
+                Questions: <strong className="workbench-pill-value">{questionCountLabel}</strong>
               </span>
-            ) : null}
-            {canExtractQuestions ? (
-              <span className="workbench-pill">
-                Warnings: <strong className="workbench-pill-value">{extraction.warnings.length}</strong>
-              </span>
-            ) : null}
-          </div>
+              {draft.skill === 'writing' ? (
+                <span className="workbench-pill">
+                  Rule:{' '}
+                  <strong className="workbench-pill-value">
+                    {draft.writingRule === 'overtime'
+                      ? 'Overtime + min words'
+                      : draft.writingRule === 'auto-submit'
+                        ? '60m auto-submit'
+                        : 'Not selected'}
+                  </strong>
+                </span>
+              ) : null}
+              {canExtractQuestions ? (
+                <span className={`workbench-pill ${hasObjectiveStructureIssue ? 'is-warning' : ''}`}>
+                  Warnings: <strong className="workbench-pill-value">{derivedWarningCount}</strong>
+                </span>
+              ) : null}
+            </div>
 
-          <p className="workbench-helper-note">
-            {!draft.skill
-              ? 'Choose a skill to begin configuring extraction and submission rules.'
-              : canExtractQuestions
-                ? 'Page range is automatic: all pages.'
-                : isValidWritingRule(draft.writingRule)
-                  ? draft.writingRule === 'overtime'
-                    ? 'Writing mode: students may exceed 60 minutes, but submission requires minimum word count.'
-                    : 'Writing mode: 60-minute timer with auto-submit at timeout, regardless of word count.'
-                  : 'Writing mode: choose a submission rule, upload Task 1 and Task 2 materials, then submit.'}
-          </p>
+            <p className={`workbench-helper-note ${hasObjectiveStructureIssue ? 'is-warning' : ''}`}>
+              {hasObjectiveQuestionShortfall && expectedQuestionCount
+                ? `Only ${questionSlotCount}/${expectedQuestionCount} question slots were detected. Missing questions must be added or extraction re-run before submit.`
+                : hasObjectivePartMismatch && expectedPartCount
+                  ? `Expected ${expectedPartCount} ${draft.skill} parts, but ${draft.parts.length} were detected. Re-run extraction or add the missing part before submit.`
+                : !draft.skill
+                  ? 'Choose a skill to begin configuring extraction and submission rules.'
+                  : canExtractQuestions
+                    ? 'Page range is automatic: all pages.'
+                    : isValidWritingRule(draft.writingRule)
+                      ? draft.writingRule === 'overtime'
+                        ? 'Writing mode: students may exceed 60 minutes, but submission requires minimum word count.'
+                        : 'Writing mode: 60-minute timer with auto-submit at timeout, regardless of word count.'
+                      : 'Writing mode: choose a submission rule, upload Task 1 and Task 2 materials, then submit.'}
+            </p>
+          </div>
         </div>
       </div>
 
@@ -1356,12 +1436,7 @@ export function UploadTestWorkbench() {
       ) : null}
 
       {submitStatus === 'loading' ? (
-        <div className="workbench-overlay">
-          <div className="workbench-overlay-card">
-            <div className="workbench-overlay-spinner" />
-            <p>Uploading media and creating test...</p>
-          </div>
-        </div>
+        <SubmitLoadingOverlay />
       ) : null}
     </section>
   );

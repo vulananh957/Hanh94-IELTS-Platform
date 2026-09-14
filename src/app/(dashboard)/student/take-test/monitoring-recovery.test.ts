@@ -122,9 +122,9 @@ describe('getMonitoringRecoveryStep', () => {
 describe('monitoring requirement validation', () => {
   it.each([
     ['monitor', 'verified'],
-    ['window', 'not_entire_screen'],
-    ['browser', 'not_entire_screen'],
-    [undefined, 'pending'],
+    ['window', 'verified'],
+    ['browser', 'verified'],
+    [undefined, 'verified'],
   ] as const)('classifies displaySurface=%s as %s', (surface, expected) => {
     expect(getScreenShareVerificationStatus(surface)).toBe(expected);
   });
@@ -152,40 +152,29 @@ describe('monitoring requirement validation', () => {
     expect(preview.play).toHaveBeenCalledTimes(1);
   });
 
-  it('waits for Chrome to expose entire-screen metadata after the share picker closes', async () => {
-    let reads = 0;
+  it('verifies an active track immediately', async () => {
     const track = {
-      getSettings: vi.fn(() => ({ displaySurface: reads++ === 0 ? undefined : 'monitor' })),
+      readyState: 'live' as MediaStreamTrackState,
+      getSettings: vi.fn(() => ({ displaySurface: 'monitor' })),
     };
 
     await expect(waitForVerifiedEntireScreenShare(track, 0)).resolves.toBe(true);
-    expect(track.getSettings).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps checking an unknown surface until Chrome confirms Entire screen', async () => {
-    let reads = 0;
+  it('rejects an ended track', async () => {
     const track = {
-      getSettings: vi.fn(() => ({ displaySurface: ++reads < 3 ? undefined : 'monitor' })),
-    };
-
-    await expect(waitForVerifiedEntireScreenShare(track, 2, 0)).resolves.toBe(true);
-    expect(track.getSettings).toHaveBeenCalledTimes(3);
-  });
-
-  it('still rejects sharing when the delayed metadata is not entire screen', async () => {
-    const track = {
+      readyState: 'ended' as MediaStreamTrackState,
       getSettings: vi.fn(() => ({ displaySurface: 'window' })),
     };
 
     await expect(waitForVerifiedEntireScreenShare(track, 0)).resolves.toBe(false);
-    expect(track.getSettings).toHaveBeenCalledTimes(1);
   });
 
   it.each([
     ['monitor', true],
-    ['window', false],
-    ['browser', false],
-    [undefined, false],
+    ['window', true],
+    ['browser', true],
+    [undefined, true],
   ] as const)('accepts displaySurface=%s as entire screen: %s', (surface, expected) => {
     expect(isEntireScreenShare(surface)).toBe(expected);
   });

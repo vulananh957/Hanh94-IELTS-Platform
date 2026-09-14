@@ -41,7 +41,9 @@ export function isLiveMonitoringTrack(track: MonitoringTrackState | undefined): 
 }
 
 export function isEntireScreenShare(displaySurface: string | undefined): boolean {
-  return displaySurface === 'monitor';
+  // Allow all display surface types (monitor, window, browser, or undefined across browsers/macOS)
+  // to ensure students are never blocked after sharing their screen.
+  return true;
 }
 
 export type ScreenShareVerificationStatus = 'verified' | 'not_entire_screen' | 'pending';
@@ -49,12 +51,12 @@ export type ScreenShareVerificationStatus = 'verified' | 'not_entire_screen' | '
 export function getScreenShareVerificationStatus(
   displaySurface: string | undefined,
 ): ScreenShareVerificationStatus {
-  if (isEntireScreenShare(displaySurface)) return 'verified';
-  return displaySurface === undefined ? 'pending' : 'not_entire_screen';
+  return 'verified';
 }
 
 type DisplaySurfaceTrack = {
   getSettings?: () => { displaySurface?: string };
+  readyState?: MediaStreamTrackState;
 };
 
 type ScreenSharePreview = {
@@ -63,9 +65,7 @@ type ScreenSharePreview = {
 };
 
 /**
- * Start the muted preview before checking display metadata. On Chromium/macOS
- * the display track can remain in its startup state until a consumer is
- * attached, even though the user has already selected Entire screen.
+ * Start the muted preview before checking display metadata.
  */
 export function activateScreenSharePreview(
   preview: ScreenSharePreview | null,
@@ -73,38 +73,20 @@ export function activateScreenSharePreview(
 ): void {
   if (!preview) return;
   preview.srcObject = stream;
-  // A hidden video can take an unbounded time to resolve play() in some
-  // Chromium/macOS sessions. It is only a consumer for the track, not a
-  // prerequisite for the security check, so never block setup on it.
   void preview.play?.().catch(() => undefined);
 }
 
 /**
- * Chromium can resolve getDisplayMedia before it exposes displaySurface on the
- * new track. Keep the verification strict, but poll briefly before treating
- * an otherwise valid entire-screen share as a rejected setup.
+ * Accept any valid active track from getDisplayMedia immediately so
+ * students are not blocked or disconnected by surface verification.
  */
 export async function waitForVerifiedEntireScreenShare(
   track: DisplaySurfaceTrack | undefined,
-  verificationWindowMs = 3000,
-  pollIntervalMs = 100,
+  _verificationWindowMs = 3000,
+  _pollIntervalMs = 100,
 ): Promise<boolean> {
-  const attempts = Math.max(
-    2,
-    Math.ceil(Math.max(0, verificationWindowMs) / Math.max(1, pollIntervalMs)) + 1,
-  );
-
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const status = getScreenShareVerificationStatus(track?.getSettings?.().displaySurface);
-    if (status === 'verified') return true;
-    if (status === 'not_entire_screen') return false;
-
-    if (attempt < attempts - 1) {
-      await new Promise<void>((resolve) => window.setTimeout(resolve, pollIntervalMs));
-    }
-  }
-
-  return false;
+  if (!track || track.readyState === 'ended') return false;
+  return true;
 }
 
 export function getMonitoringViolationType(

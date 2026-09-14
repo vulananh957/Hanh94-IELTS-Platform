@@ -11,6 +11,7 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import { firebaseApp } from './firebase';
+import { getClassAssignmentOpenedAt } from '@/lib/class-assignment-timing';
 import { fetchAssignedTestSummaries, type TestAccessLock } from './test-access';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -84,11 +85,15 @@ export async function fetchStudentAssignments(
 
   // Build complete classCodeToId map (same logic as student-dashboard.ts)
   const classCodeToId = new Map<string, string>();
+  const classIdToCode = new Map<string, string>();
   try {
     const classesSnap = await getDocs(collection(db, 'classes'));
     classesSnap.docs.forEach((d) => {
       const data = d.data();
-      if (data.code) classCodeToId.set(data.code, d.id);
+      if (data.code) {
+        classCodeToId.set(data.code, d.id);
+        classIdToCode.set(d.id, data.code);
+      }
     });
   } catch { /* ignore */ }
 
@@ -99,6 +104,12 @@ export async function fetchStudentAssignments(
       userClassDocId = mappedDocId;
     }
   }
+
+  const userClassKeys = Array.from(new Set([
+    userClassId,
+    userClassDocId,
+    userClassDocId ? classIdToCode.get(userClassDocId) : null,
+  ].filter((value): value is string => Boolean(value))));
 
   // 3. Map completed tests
   // Group results by testId
@@ -148,11 +159,16 @@ export async function fetchStudentAssignments(
     }
   });
 
-  // 4. Build a map of test IDs to their class assignment timestamps
+  // 4. Build a map of each test's opening time for this Student's class.
+  // A test can be opened to different classes at different times.
   const testAssignmentTimes = new Map<string, Date>();
   assignedTests.forEach((test) => {
     const testId = test.id;
-    const assignmentTime = extractDate(test.classAssignment?.updatedAt || test.createdAt);
+    const assignmentTime = extractDate(getClassAssignmentOpenedAt(
+      test.classAssignment,
+      userClassKeys,
+      test.createdAt,
+    ));
     testAssignmentTimes.set(testId, assignmentTime);
   });
 
