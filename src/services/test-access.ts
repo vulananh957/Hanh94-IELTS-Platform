@@ -121,7 +121,7 @@ export async function callTestAccess<T>(path: string, method: 'GET' | 'POST', bo
   return requestTestAccess<T>({ path, method, body, token: await token() });
 }
 
-function isProtectedMaterialUrl(value: string): boolean {
+export function isProtectedTestMaterialUrl(value: string): boolean {
   try {
     return new URL(value).pathname.endsWith('/getTestMaterial');
   } catch {
@@ -153,7 +153,7 @@ async function fetchProtectedMaterial(url: string, accessToken: string): Promise
 
 async function hydrateProtectedMaterial(value: unknown, accessToken: string): Promise<unknown> {
   if (typeof value === 'string') {
-    return isProtectedMaterialUrl(value) ? fetchProtectedMaterial(value, accessToken) : value;
+    return isProtectedTestMaterialUrl(value) ? fetchProtectedMaterial(value, accessToken) : value;
   }
   if (Array.isArray(value)) return Promise.all(value.map((item) => hydrateProtectedMaterial(item, accessToken)));
   if (value && typeof value === 'object') {
@@ -171,10 +171,10 @@ export async function hydrateProtectedMaterialUrls(
   options: { stream?: boolean } = {},
 ): Promise<string[]> {
   if (options.stream) return urls;
-  if (!urls.some(isProtectedMaterialUrl)) return urls;
+  if (!urls.some(isProtectedTestMaterialUrl)) return urls;
   const accessToken = await token();
   return Promise.all(urls.map((url) => (
-    isProtectedMaterialUrl(url) ? fetchProtectedMaterial(url, accessToken) : url
+    isProtectedTestMaterialUrl(url) ? fetchProtectedMaterial(url, accessToken) : url
   )));
 }
 

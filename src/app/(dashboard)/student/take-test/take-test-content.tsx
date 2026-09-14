@@ -39,6 +39,7 @@ import {
   getPendingHardLock,
   hardLockAttempt,
   fetchAccessibleTest,
+  isProtectedTestMaterialUrl,
   rememberPendingHardLock,
 } from '@/services/test-access';
 import { invalidateStudentCache } from '@/services/student-dashboard';
@@ -131,6 +132,7 @@ function isImageUrl(url: string | undefined): boolean {
 
 function MediaPreview({ url, label, isWriting = false }: { url: string; label: string; isWriting?: boolean }) {
   const [mode, setMode] = useState<'direct' | 'google' | 'error'>('direct');
+  const canUseGoogleViewer = !isProtectedTestMaterialUrl(url);
   const googleViewerUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(url)}&embedded=true`;
 
   return (
@@ -144,21 +146,13 @@ function MediaPreview({ url, label, isWriting = false }: { url: string; label: s
           // eslint-disable-next-line @next/next/no-img-element
           <img src={url} alt={label} />
         ) : mode === 'direct' ? (
-          <iframe src={url} title={label} onError={() => setMode('google')} />
+          <iframe src={url} title={label} onError={() => setMode(canUseGoogleViewer ? 'google' : 'error')} />
         ) : mode === 'google' ? (
           <iframe src={googleViewerUrl} title={label} onError={() => setMode('error')} />
         ) : (
           <div className="tt-media-error" style={{ padding: '2rem', textAlign: 'center', color: '#666' }}>
             <h3>PDF cannot be displayed</h3>
-            <p style={{ wordBreak: 'break-all' }}>{url}</p>
-            <div style={{ margin: '1rem 0' }}>
-              <a href={url} target="_blank" rel="noreferrer" style={{ color: '#006769', textDecoration: 'underline', margin: '0 0.5rem' }}>
-                Open in new tab
-              </a>
-              <a href={url} download style={{ color: '#006769', textDecoration: 'underline', margin: '0 0.5rem' }}>
-                Download
-              </a>
-            </div>
+            <p>Please refresh the test or ask your teacher for help.</p>
           </div>
         )}
       </div>
@@ -783,7 +777,7 @@ export function TakeTestContent() {
           const result = await hardLockAttempt(pending);
           clearPendingHardLock(testId, user.uid);
           if (!result.locked) {
-            const data = await fetchAccessibleTest<TestData>(testId);
+            const data = await fetchAccessibleTest<TestData>(testId, { hydrateMaterials: false });
             if (active) applyLoadedTest(data);
           }
         } catch (err) {
@@ -795,7 +789,7 @@ export function TakeTestContent() {
       }
 
       try {
-        const data = await fetchAccessibleTest<TestData>(testId);
+        const data = await fetchAccessibleTest<TestData>(testId, { hydrateMaterials: false });
         if (!active) return;
         applyLoadedTest(data);
       } catch (err) {
@@ -1858,7 +1852,7 @@ export function TakeTestContent() {
                 <h3>Audio Part {part}{waitingForThisPart && listeningGapRemaining > 0 ? ` - next in ${countdownText}` : ''}</h3>
                 <audio
                   id={`tt-audio-${part - 1}`}
-                  preload="auto"
+                  preload="metadata"
                   src={url}
                   onEnded={() => handleListeningAudioEnded(part)}
                 />
