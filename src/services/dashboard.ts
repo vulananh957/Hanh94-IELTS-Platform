@@ -12,6 +12,7 @@ import {
   getCountFromServer,
 } from 'firebase/firestore';
 import { firebaseApp } from './firebase';
+import { isActiveManagedStudent } from './user-directory';
 
 export interface SkillStat {
   average: number;
@@ -52,17 +53,21 @@ export interface ActivityRecord {
 }
 
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+const STATS_CACHE_VERSION = 'v2';
 
 // Track in-flight requests to prevent duplicate queries
 const requestMap = new Map<string, Promise<any>>();
 
 export function invalidateDashboardDataCache(teacherEmail: string): void {
-  const statsKey = `dashboard_stats_${teacherEmail}`;
+  const statsKey = `dashboard_stats_${STATS_CACHE_VERSION}_${teacherEmail}`;
+  const legacyStatsKey = `dashboard_stats_${teacherEmail}`;
   const activitiesKey = `recent_activities_${teacherEmail}`;
 
   if (typeof window !== 'undefined') {
     localStorage.removeItem(statsKey);
     localStorage.removeItem(`${statsKey}_time`);
+    localStorage.removeItem(legacyStatsKey);
+    localStorage.removeItem(`${legacyStatsKey}_time`);
     localStorage.removeItem(activitiesKey);
     localStorage.removeItem(`${activitiesKey}_time`);
     localStorage.removeItem('dashboard_tests_metadata_map');
@@ -257,7 +262,7 @@ export async function calculateDashboardStats(teacherEmail: string): Promise<Das
 
   try {
     // Check cache first
-    const cacheKey = `dashboard_stats_${teacherEmail}`;
+    const cacheKey = `dashboard_stats_${STATS_CACHE_VERSION}_${teacherEmail}`;
     const cachedData = localStorage.getItem(cacheKey);
     const cacheTime = localStorage.getItem(`${cacheKey}_time`);
 
@@ -274,14 +279,14 @@ export async function calculateDashboardStats(teacherEmail: string): Promise<Das
     // Launch optimized queries in parallel
     const [
       totalTestsCount,
-      activeStudentsCount,
+      usersSnapshot,
       attemptsSnapshot,
       testResultsSnapshot,
       writingLegacySnapshot,
       testsCache,
     ] = await Promise.all([
       getCountFromServer(collection(db, 'tests')),
-      getCountFromServer(query(collection(db, 'users'), where('role', '==', 'student'))),
+      getDocs(collection(db, 'users')),
       getDocs(query(collection(db, 'attempts'), where('status', '==', 'completed'))),
       getDocs(collection(db, 'testResults')),
       getDocs(collection(db, 'writing')),
@@ -419,7 +424,9 @@ export async function calculateDashboardStats(teacherEmail: string): Promise<Das
     }
 
     // ── 5. Get unique students ─────────────────────────────────────────────────
-    const activeStudents = activeStudentsCount.data().count;
+    const activeStudents = usersSnapshot.docs.filter((item) => (
+      isActiveManagedStudent(item.data() as Record<string, unknown>)
+    )).length;
 
     // ── 6. Calculate skill stats from deduplicated objective results ────────────
     const skillStats = {

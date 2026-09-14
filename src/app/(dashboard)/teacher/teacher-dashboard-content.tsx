@@ -136,6 +136,8 @@ export function TeacherDashboardContent() {
     watchQuery(query(collection(db, 'attempts'), orderBy('completedAt', 'desc'), limit(1)));
     watchQuery(query(collection(db, 'writing'), orderBy('submittedAt', 'desc'), limit(1)));
     watchQuery(query(collection(db, 'testResults'), orderBy('completedAt', 'desc'), limit(1)));
+    // Keep the account count in lock-step with Manage Users after role/status changes.
+    watchQuery(collection(db, 'users'));
 
     const interval = setInterval(() => {
       if (!active) return;

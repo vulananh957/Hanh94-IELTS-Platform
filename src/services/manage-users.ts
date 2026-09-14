@@ -7,6 +7,7 @@ import {
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import { firebaseApp } from './firebase';
+import { isManagedUserDisabled, managedUserRole } from './user-directory';
 
 export interface ManageUserRecord {
   id: string;
@@ -352,20 +353,11 @@ export async function getManageUsersData(
 
     const users: ManageUserRecord[] = usersSnapshot.docs.flatMap((doc) => {
       const data = doc.data() as Record<string, unknown>;
-      const status = toStringSafe(data.status, '').trim().toLowerCase();
-      const isDisabled =
-        status === 'disabled' ||
-        status === 'deleted' ||
-        data.isActive === false ||
-        data.disabled === true ||
-        Boolean(data.deletedAt) ||
-        Boolean(data.removedAt);
-
-      if (isDisabled) {
+      if (isManagedUserDisabled(data)) {
         return [];
       }
 
-      const role = toStringSafe(data.role, 'student') || 'student';
+      const role = managedUserRole(data);
       const emailValue = toStringSafe(data.email, '');
       const nameValue =
         toStringSafe(data.name, '') ||
