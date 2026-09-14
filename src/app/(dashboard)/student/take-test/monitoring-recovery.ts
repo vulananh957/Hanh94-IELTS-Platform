@@ -48,6 +48,25 @@ type DisplaySurfaceTrack = {
   getSettings?: () => { displaySurface?: string };
 };
 
+type ScreenSharePreview = {
+  srcObject: unknown;
+  play?: () => Promise<unknown>;
+};
+
+/**
+ * Start the muted preview before checking display metadata. On Chromium/macOS
+ * the display track can remain in its startup state until a consumer is
+ * attached, even though the user has already selected Entire screen.
+ */
+export async function activateScreenSharePreview(
+  preview: ScreenSharePreview | null,
+  stream: unknown,
+): Promise<void> {
+  if (!preview) return;
+  preview.srcObject = stream;
+  await preview.play?.().catch(() => undefined);
+}
+
 /**
  * Chromium can resolve getDisplayMedia before it exposes displaySurface on the
  * new track. Keep the verification strict, but re-read the metadata once on

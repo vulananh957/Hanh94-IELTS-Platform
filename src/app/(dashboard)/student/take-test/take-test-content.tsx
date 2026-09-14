@@ -25,6 +25,7 @@ import {
   type EvidenceAttemptPathInput,
 } from './evidence-storage';
 import {
+  activateScreenSharePreview,
   ensureMonitoringStreams,
   getMonitoringRecoveryStep,
   getMonitoringViolationType,
@@ -618,6 +619,11 @@ export function TakeTestContent() {
       });
       const [track] = stream.getVideoTracks();
 
+      // Attach the muted preview before checking display metadata. Some
+      // Chromium/macOS sessions only finalize that metadata once playback has
+      // a consumer, even after the student chose Entire screen.
+      await activateScreenSharePreview(screenVideoRef.current, stream);
+
       // Evidence is valid only when the browser explicitly confirms that the
       // student shared their entire display. Chromium can expose this setting
       // just after the chooser closes, so verify it again after a short delay.
@@ -639,7 +645,6 @@ export function TakeTestContent() {
       screenRequirementLostRef.current = false;
       screenStreamRef.current = stream;
       setScreenStream(stream);
-      if (screenVideoRef.current) screenVideoRef.current.srcObject = stream;
       return true;
     } catch {
       return false;

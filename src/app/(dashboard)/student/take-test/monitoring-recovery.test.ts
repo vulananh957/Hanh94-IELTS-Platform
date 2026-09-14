@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  activateScreenSharePreview,
   ensureMonitoringStreams,
   getMonitoringRecoveryStep,
   getMonitoringViolationType,
@@ -118,6 +119,19 @@ describe('getMonitoringRecoveryStep', () => {
 });
 
 describe('monitoring requirement validation', () => {
+  it('activates the screen preview before checking the selected display', async () => {
+    const stream = { id: 'screen-stream' };
+    const preview = {
+      srcObject: null as unknown,
+      play: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await activateScreenSharePreview(preview, stream);
+
+    expect(preview.srcObject).toBe(stream);
+    expect(preview.play).toHaveBeenCalledTimes(1);
+  });
+
   it('waits for Chrome to expose entire-screen metadata after the share picker closes', async () => {
     let reads = 0;
     const track = {
